@@ -1,6 +1,9 @@
+import asyncio
+import http.server
 import json
 import openai
 import os
+import threading
 import numpy as np
 import logging
 from telegram import Update
@@ -119,6 +122,32 @@ def main():
     MESSAGE_EMBEDDINGS = get_embeddings([m["text"] for m in MESSAGES])
     logging.info(f"Ready — {len(MESSAGES)} messages indexed.")
 
+    # Render Web Service port binding check
+    port = os.getenv("PORT")
+    if port:
+        class HealthCheckHandler(http.server.BaseHTTPRequestHandler):
+            def do_GET(self):
+                self.send_response(200)
+                self.send_header("Content-type", "text/plain")
+                self.end_headers()
+                self.wfile.write(b"OK")
+
+            def log_message(self, format, *args):
+                pass
+
+        def run_health_server():
+            server = http.server.HTTPServer(("0.0.0.0", int(port)), HealthCheckHandler)
+            server.serve_forever()
+
+        threading.Thread(target=run_health_server, daemon=True).start()
+        logging.info(f"Health-check server running on port {port}")
+
+    # In Python 3.12/3.14+, get_event_loop() no longer auto-creates a loop
+    try:
+        asyncio.get_event_loop()
+    except RuntimeError:
+        asyncio.set_event_loop(asyncio.new_event_loop())
+
     application = Application.builder().token(TELEGRAM_BOT_TOKEN).build()
     application.add_handler(CommandHandler("start", start))
     application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
@@ -127,3 +156,4 @@ def main():
 
 if __name__ == '__main__':
     main()
+
