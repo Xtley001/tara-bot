@@ -148,6 +148,25 @@ def synthesize_pastoral_guidance(user_name: str, query: str, top_sermon: dict) -
         return ""
 
 
+def get_sermon_title(msg: dict) -> str:
+    """Extract clean sermon title from message metadata, filename, or text."""
+    if not msg:
+        return "Prophetic Teaching"
+    if msg.get("title"):
+        return msg["title"].strip()
+    if msg.get("audio_filename"):
+        fn = msg["audio_filename"]
+        clean = re.sub(r"\.(mp3|m4a|wav|aac)$", "", fn, flags=re.I)
+        clean = clean.replace("-", " ").strip()
+        if len(clean) > 2:
+            return clean
+    text = msg.get("text", "")
+    match = re.search(r"[“\"']([^“”\"'\n]{3,60})[”\"']", text)
+    if match:
+        return match.group(1).strip()
+    return "Prophetic Teaching"
+
+
 def get_or_load_embeddings() -> np.ndarray:
     """Load precomputed embeddings from disk if available, otherwise compute and cache them."""
     if os.path.exists(EMBEDDINGS_CACHE_PATH):
@@ -354,9 +373,18 @@ async def deliver_sermons(
     delivered_ids = []
 
     for i, (msg, _) in enumerate(batch, start_idx + 1):
+        title = get_sermon_title(msg)
+        safe_title = html.escape(title)
         text = msg.get("text", "")
-        snippet = text[:280].rsplit(" ", 1)[0] + "..." if len(text) > 280 else text
+
+        # Clean text snippet by removing repetitive boilerplate
+        clean_text = re.sub(r"(Download|Listen)[\.\s]+(Share[\.\s]+)?Be\s+Transformed.*", "", text, flags=re.I).strip()
+        if len(clean_text) > 260:
+            snippet = clean_text[:260].rsplit(" ", 1)[0] + "..."
+        else:
+            snippet = clean_text
         safe_snippet = html.escape(snippet)
+
         link = msg.get("channel_link", "")
         audio_message_id = msg.get("message_id")
         from_channel = msg.get("from_chat_id") or (f"@{msg['channel']}" if msg.get("channel") else "@pst_tara")
@@ -366,7 +394,7 @@ async def deliver_sermons(
         if audio_message_id:
             buttons.append(InlineKeyboardButton("⭐ Bookmark", callback_data=f"bm:{audio_message_id}"))
         keyboard = InlineKeyboardMarkup([buttons]) if buttons else None
-        caption = f"<b>{i}.</b> {safe_snippet}"
+        caption = f"<b>{i}. {safe_title}</b>\n\n{safe_snippet}"
 
         if audio_message_id:
             delivered_ids.append(audio_message_id)
@@ -547,10 +575,10 @@ async def on_callback_query(update: Update, context: CallbackContext) -> None:
         if msg_id_str.isdigit():
             msg_id = int(msg_id_str)
             matched = next((m for m in MESSAGES if m.get("message_id") == msg_id), None)
-            title = (matched.get("audio_filename", "") or "").replace(".mp3", "") or (matched.get("text", "")[:60] if matched else f"Sermon #{msg_id}")
+            title = get_sermon_title(matched) if matched else f"Sermon #{msg_id}"
             link = matched.get("channel_link", "") if matched else ""
             discipleship.bookmark_sermon(query.from_user.id, msg_id, title, link)
-            await query.answer("⭐ Saved to your personal spiritual library! Access anytime with /saved", show_alert=False)
+            await query.answer(f"⭐ Saved '{title[:25]}...' to your library! Type /saved to view.", show_alert=False)
         else:
             await query.answer()
     elif data == "action:more":
