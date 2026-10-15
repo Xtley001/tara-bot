@@ -1,0 +1,41 @@
+name: Daily Sermon Sync
+
+on:
+  schedule:
+    # Runs daily at 04:00 UTC (5:00 AM WAT)
+    - cron: '0 4 * * *'
+  workflow_dispatch: # Allows manual trigger from GitHub UI anytime
+
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: 'pip'
+
+      - name: Install Dependencies
+        run: |
+          pip install requests beautifulsoup4
+
+      - name: Run Daily Sync
+        run: |
+          python utilities/daily_sync.py 3
+
+      - name: Commit and Push Changes If Any
+        run: |
+          git config --local user.email "action@github.com"
+          git config --local user.name "GitHub Action Sync"
+          git add utilities/sermons.jsonl
+          if git diff --staged --quiet; then
+            echo "No changes to commit."
+          else
+            git commit -m "chore(data): auto-sync latest sermons from archive [skip ci]"
+            git push
+          fi
