@@ -29,6 +29,11 @@ CATEGORY_KEYWORDS = {
     "Purpose & Destiny": [
         "purpose", "destiny", "calling", "direction", "vision", "decision", "future",
         "guidance", "lead", "plan", "potential", "identity", "excellence", "exploits"
+    ],
+    "Academics & Student Excellence": [
+        "academic", "academics", "student", "students", "school", "exam", "exams", "study",
+        "studies", "university", "college", "grades", "intelligence", "memory", "retention",
+        "scholar", "scholarship", "learning", "intellect", "lecture", "course"
     ]
 }
 

@@ -244,7 +244,7 @@ def get_welcome_message(user, profile: dict = None) -> tuple[str, InlineKeyboard
         "How you can engage:\n"
         "• <b>Share what is on your heart:</b> Type any life situation, spiritual question, or topic you desire breakthrough or direction in.\n"
         "• <b>Explore themes:</b> Tap /categories below to explore curated ministry themes.\n"
-        "• <b>Listen & Bookmark:</b> Messages can be played right here in Telegram or saved to your personal library with /saved.\n\n"
+        "• <b>Listen directly:</b> Messages can be played right here in Telegram or viewed in the official channel.\n\n"
         "<b>Sample topics to explore:</b>\n"
         "• <i>Building structures for financial prosperity</i>\n"
         "• <i>Stretching in prayer and spiritual encounters</i>\n"
@@ -263,13 +263,11 @@ HELP_TEXT = (
     "<b>Commands:</b>\n"
     "/start - Welcome guide and pastoral introduction\n"
     "/categories - Explore curated ministry themes\n"
-    "/saved - View your saved sermon bookmarks\n"
     "/more - Receive next teaching in your active series\n"
     "/help - Show this guide\n\n"
     "<b>Search Tips:</b>\n"
     "• Speak freely in natural words. Rather than just a single term, describe what you are walking through (e.g., 'wisdom for expanding my enterprise' or 'how to stretch in prayer and conquer fear').\n"
     "• Audio messages are playable directly inside this chat.\n"
-    "• Tap '⭐ Bookmark' under any message to save it to your personal library (/saved).\n"
     "• Type 'more' or 'next' anytime to advance to the next sermon in the series."
 )
 
@@ -279,10 +277,13 @@ CATEGORIES_KEYBOARD = InlineKeyboardMarkup([
     ],
     [
         InlineKeyboardButton("Supernatural Business & Wealth", callback_data="cat:Supernatural Business & Wealth"),
-        InlineKeyboardButton("Marriage, Family & Fruitfulness", callback_data="cat:Marriage, Family & Fruitfulness"),
+        InlineKeyboardButton("Academics & Student Excellence", callback_data="cat:Academics & Student Excellence"),
     ],
     [
+        InlineKeyboardButton("Marriage, Family & Fruitfulness", callback_data="cat:Marriage, Family & Fruitfulness"),
         InlineKeyboardButton("Health, Wholeness & Healing", callback_data="cat:Health, Wholeness & Healing"),
+    ],
+    [
         InlineKeyboardButton("Purpose, Calling & Destiny", callback_data="cat:Purpose, Calling & Destiny"),
     ],
 ])
@@ -293,7 +294,6 @@ async def post_init(application: Application):
     commands = [
         BotCommand("start", "Welcome guide and pastoral introduction"),
         BotCommand("categories", "Browse sermons by ministry theme"),
-        BotCommand("saved", "View your saved sermon bookmarks"),
         BotCommand("more", "Deliver additional messages from recent search"),
         BotCommand("help", "Search instructions and tips"),
     ]
@@ -388,12 +388,7 @@ async def deliver_sermons(
         link = msg.get("channel_link", "")
         audio_message_id = msg.get("message_id")
         from_channel = msg.get("from_chat_id") or (f"@{msg['channel']}" if msg.get("channel") else "@pst_tara")
-        buttons = []
-        if link:
-            buttons.append(InlineKeyboardButton("Open in Channel", url=link))
-        if audio_message_id:
-            buttons.append(InlineKeyboardButton("⭐ Bookmark", callback_data=f"bm:{audio_message_id}"))
-        keyboard = InlineKeyboardMarkup([buttons]) if buttons else None
+        keyboard = InlineKeyboardMarkup([[InlineKeyboardButton("Open in Channel", url=link)]]) if link else None
         caption = f"<b>{i}. {safe_title}</b>\n\n{safe_snippet}"
 
         if audio_message_id:
@@ -509,32 +504,7 @@ async def stats_command(update: Update, context: CallbackContext) -> None:
     await update.message.reply_text(stats_msg)
 
 
-async def saved_command(update: Update, context: CallbackContext) -> None:
-    """Show the believer's saved / bookmarked sermons."""
-    user = update.effective_user
-    name = (user.first_name if user and user.first_name else "").strip() or "Beloved"
-    bookmarks = discipleship.get_bookmarks(user.id)
-    if not bookmarks:
-        await update.message.reply_text(
-            f"{name}, you have not bookmarked any sermons yet.\n\n"
-            "When you discover a message that ministers to you, tap the <b>⭐ Bookmark</b> button below it "
-            "to save it to your personal spiritual library.",
-            parse_mode="HTML",
-        )
-        return
 
-    lines = [f"<b>Your Saved Teachings, {name}</b> ({len(bookmarks)} total):\n"]
-    keyboard_rows = []
-    for i, bm in enumerate(bookmarks[:8], 1):
-        title = bm["title"]
-        link = bm.get("channel_link", "")
-        lines.append(f"{i}. <b>{html.escape(title)}</b>")
-        if link:
-            keyboard_rows.append([InlineKeyboardButton(f"{i}. Listen: {title[:28]}...", url=link)])
-
-    msg_text = "\n".join(lines) + "\n\n<i>Tap a message below to listen directly in the channel:</i>"
-    reply_markup = InlineKeyboardMarkup(keyboard_rows) if keyboard_rows else None
-    await update.message.reply_text(msg_text, parse_mode="HTML", reply_markup=reply_markup)
 
 
 async def myid_command(update: Update, context: CallbackContext) -> None:
@@ -570,17 +540,6 @@ async def on_callback_query(update: Update, context: CallbackContext) -> None:
             "Select a ministry theme below, or describe your situation in your own words:",
             reply_markup=CATEGORIES_KEYBOARD,
         )
-    elif data.startswith("bm:"):
-        msg_id_str = data.split("bm:", 1)[1]
-        if msg_id_str.isdigit():
-            msg_id = int(msg_id_str)
-            matched = next((m for m in MESSAGES if m.get("message_id") == msg_id), None)
-            title = get_sermon_title(matched) if matched else f"Sermon #{msg_id}"
-            link = matched.get("channel_link", "") if matched else ""
-            discipleship.bookmark_sermon(query.from_user.id, msg_id, title, link)
-            await query.answer(f"⭐ Saved '{title[:25]}...' to your library! Type /saved to view.", show_alert=False)
-        else:
-            await query.answer()
     elif data == "action:more":
         last_ranked = context.user_data.get("last_ranked")
         if not last_ranked:
@@ -743,7 +702,6 @@ def main():
     application.add_handler(CommandHandler("start", start_command))
     application.add_handler(CommandHandler("help", help_command))
     application.add_handler(CommandHandler("categories", categories_command))
-    application.add_handler(CommandHandler("saved", saved_command))
     application.add_handler(CommandHandler("more", more_command))
     application.add_handler(CommandHandler("stats", stats_command))
     application.add_handler(CommandHandler("myid", myid_command))

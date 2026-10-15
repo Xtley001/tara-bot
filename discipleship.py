@@ -26,17 +26,6 @@ def init_discipleship_db():
                 last_seen TIMESTAMP
             )
         """)
-        cursor.execute("""
-            CREATE TABLE IF NOT EXISTS bookmarks (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                user_id INTEGER,
-                message_id INTEGER,
-                title TEXT,
-                channel_link TEXT,
-                created_at TIMESTAMP,
-                UNIQUE(user_id, message_id)
-            )
-        """)
         conn.commit()
         conn.close()
     except Exception as e:
@@ -113,64 +102,5 @@ def record_user_visit_and_topic(user_id: int, first_name: str, username: str, to
         return {}
 
 
-def bookmark_sermon(user_id: int, message_id: int, title: str, channel_link: str) -> bool:
-    now = datetime.utcnow().isoformat()
-    try:
-        conn = sqlite3.connect(DB_PATH)
-        cursor = conn.cursor()
-        cursor.execute("""
-            INSERT OR REPLACE INTO bookmarks (user_id, message_id, title, channel_link, created_at)
-            VALUES (?, ?, ?, ?, ?)
-        """, (user_id, message_id, title, channel_link, now))
-        conn.commit()
-        conn.close()
-        return True
-    except Exception as e:
-        logging.warning(f"Error bookmarking sermon: {e}")
-        return False
-
-
-def remove_bookmark(user_id: int, message_id: int) -> bool:
-    try:
-        conn = sqlite3.connect(DB_PATH)
-        cursor = conn.cursor()
-        cursor.execute("DELETE FROM bookmarks WHERE user_id = ? AND message_id = ?", (user_id, message_id))
-        conn.commit()
-        conn.close()
-        return True
-    except Exception as e:
-        logging.warning(f"Error removing bookmark: {e}")
-        return False
-
-
-def get_bookmarks(user_id: int) -> list:
-    try:
-        conn = sqlite3.connect(DB_PATH)
-        cursor = conn.cursor()
-        cursor.execute("""
-            SELECT message_id, title, channel_link, created_at
-            FROM bookmarks
-            WHERE user_id = ?
-            ORDER BY id DESC
-        """, (user_id,))
-        rows = cursor.fetchall()
-        conn.close()
-        return [{"message_id": r[0], "title": r[1], "channel_link": r[2], "created_at": r[3]} for r in rows]
-    except Exception as e:
-        logging.warning(f"Error fetching bookmarks: {e}")
-        return []
-
-
-def is_bookmarked(user_id: int, message_id: int) -> bool:
-    try:
-        conn = sqlite3.connect(DB_PATH)
-        cursor = conn.cursor()
-        cursor.execute("SELECT 1 FROM bookmarks WHERE user_id = ? AND message_id = ?", (user_id, message_id))
-        row = cursor.fetchone()
-        conn.close()
-        return bool(row)
-    except Exception:
-        return False
-
-
 init_discipleship_db()
+
