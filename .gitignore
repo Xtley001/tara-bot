@@ -9,3 +9,5 @@ venv/
 *.session
 *.session-journal
 .code_hash
+*.db
+*.db-journal
