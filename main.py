@@ -7,8 +7,8 @@ import os
 import random
 import re
 import threading
+import urllib.request
 import numpy as np
-import openai
 from dotenv import load_dotenv
 from telegram import (
     BotCommand,
@@ -59,8 +59,6 @@ if not TELEGRAM_BOT_TOKEN:
 if not OPENAI_API_KEY:
     logging.warning("OPENAI_API_KEY is not set. Embeddings generation will fail.")
 
-client = openai.OpenAI(api_key=OPENAI_API_KEY)
-
 BASE_DIR = os.path.dirname(__file__)
 COMBINED_PATH = os.path.join(BASE_DIR, "utilities", "combined_channel_messages.jsonl")
 PRIMARY_PATH = os.path.join(BASE_DIR, "utilities", "channel_messages.jsonl")
@@ -79,14 +77,74 @@ MESSAGES = load_jsonl(MESSAGES_PATH)
 NORMED_MESSAGE_EMBEDDINGS = None
 
 
+def openai_api_request(endpoint: str, payload: dict, timeout: int = 15) -> dict:
+    url = f"https://api.openai.com/v1/{endpoint}"
+    data = json.dumps(payload).encode("utf-8")
+    req = urllib.request.Request(
+        url,
+        data=data,
+        headers={
+            "Authorization": f"Bearer {OPENAI_API_KEY}",
+            "Content-Type": "application/json",
+            "User-Agent": "TaraBot/1.0",
+        },
+    )
+    with urllib.request.urlopen(req, timeout=timeout) as resp:
+        return json.loads(resp.read().decode("utf-8"))
+
+
 def get_embeddings(texts: list) -> np.ndarray:
     batch_size = 100
     all_embeddings = []
     for i in range(0, len(texts), batch_size):
         batch = texts[i:i + batch_size]
-        response = client.embeddings.create(input=batch, model="text-embedding-3-small")
-        all_embeddings.extend([item.embedding for item in response.data])
+        res = openai_api_request("embeddings", {"input": batch, "model": "text-embedding-3-small"})
+        all_embeddings.extend([item["embedding"] for item in res["data"]])
     return np.array(all_embeddings)
+
+
+def synthesize_pastoral_guidance(user_name: str, query: str, top_sermon: dict) -> str:
+    """Generate warm, faith-filled pastoral counsel in Pastor Tara's voice."""
+    if not OPENAI_API_KEY:
+        return ""
+    try:
+        sermon_title = (top_sermon.get("audio_filename", "") or "").replace(".mp3", "") or top_sermon.get("text", "")[:60]
+        sermon_snippet = top_sermon.get("text", "")[:350]
+
+        system_prompt = (
+            "You are the personal AI Ministry Assistant for Pastor Tara Akinkuade (Senior Pastor of The Standing Church). "
+            "Speak in Pastor Tara's authentic, faith-filled, warm pastoral voice. Embody his key revelations: "
+            "the Blessing of Dominion, stretching in prayer and spiritual encounters, giving credence to God's Word over sensory facts, "
+            "spiritual structures for enterprise, and walking in supernatural wisdom.\n\n"
+            "Format your response in exactly two short paragraphs:\n"
+            "Paragraph 1: Address the believer warmly by their first name (e.g., 'Dear Christley,' or 'Grace and peace to you, Christley.'). "
+            "Give a 2-sentence spiritual anchor that directly addresses their inquiry or topic with prophetic clarity.\n"
+            "Paragraph 2: A 1-sentence declaration starting with '<b>Confession for Today:</b> ' with the confession inside quotation marks."
+        )
+
+        user_content = (
+            f"Believer First Name: {user_name}\n"
+            f"Spiritual Inquiry / Topic: {query}\n"
+            f"Key Sermon Context: {sermon_title}\n"
+            f"Excerpt: {sermon_snippet}"
+        )
+
+        payload = {
+            "model": "gpt-4o-mini",
+            "messages": [
+                {"role": "system", "content": system_prompt},
+                {"role": "user", "content": user_content},
+            ],
+            "max_tokens": 220,
+            "temperature": 0.6,
+        }
+
+        res = openai_api_request("chat/completions", payload, timeout=6)
+        content = res["choices"][0]["message"]["content"].strip()
+        return content
+    except Exception as e:
+        logging.warning(f"Could not synthesize pastoral guidance: {e}")
+        return ""
 
 
 def get_or_load_embeddings() -> np.ndarray:
@@ -139,50 +197,51 @@ def rank_messages(user_query: str, seen_ids: set = None) -> list:
     return results
 
 
-WELCOME = (
-    "Welcome to Pastor Tara Akinkuade's Sermon Assistant.\n\n"
-    "This bot helps you discover and listen to relevant audio messages and prophetic teachings directly from Pastor Tara's official channels.\n\n"
-    "How to use:\n"
-    "• Type any topic, spiritual question, or life situation you are seeking guidance on.\n"
-    "• You can play the audio message directly in this chat or tap 'Open in Channel' to view it in the original channel.\n\n"
-    "Sample searches:\n"
-    "• Building structures for financial prosperity\n"
-    "• Stretching in prayer and spiritual encounters\n"
-    "• Principles for a fruitful marriage\n"
-    "• Destiny realignment and vision\n\n"
-    "Top commands:\n"
-    "/start - Welcome guide and introduction\n"
-    "/categories - Browse sermons by ministry theme\n"
-    "/more - Deliver additional messages from your last search\n"
-    "/help - Search instructions and tips\n\n"
-    "Type your topic or question below to begin."
-)
+def get_welcome_message(user) -> str:
+    name = (user.first_name if user and user.first_name else "").strip() or "Beloved"
+    return (
+        f"Grace and peace to you, {name}.\n\n"
+        "Welcome to Pastor Tara Akinkuade's Sermon Assistant.\n\n"
+        "I am here to minister alongside you—to help you discover, meditate upon, and listen to "
+        "prophetic audio messages directly from Pastor Tara's official library.\n\n"
+        "How you can engage:\n"
+        "• <b>Share what is on your heart:</b> Type any life situation, spiritual question, or topic you desire breakthrough or direction in.\n"
+        "• <b>Explore themes:</b> Tap /categories below to explore curated ministry themes.\n"
+        "• <b>Listen directly:</b> Messages can be played right here in Telegram or viewed in the official channel.\n\n"
+        "<b>Sample topics to explore:</b>\n"
+        "• <i>Building structures for financial prosperity</i>\n"
+        "• <i>Stretching in prayer and spiritual encounters</i>\n"
+        "• <i>Principles for a fruitful marriage</i>\n"
+        "• <i>Destiny realignment and the Blessing of Dominion</i>\n\n"
+        "Type your question or heart desire below to begin."
+    )
+
 
 HELP_TEXT = (
-    "Pastor Tara's Sermon Assistant — Commands & Guide\n\n"
-    "Commands:\n"
-    "/start - Welcome guide and introduction\n"
-    "/categories - Browse curated ministry themes\n"
-    "/more - Deliver additional messages from your last search\n"
+    "<b>Pastor Tara's Sermon Assistant — Commands & Guide</b>\n\n"
+    "<b>Commands:</b>\n"
+    "/start - Welcome guide and pastoral introduction\n"
+    "/categories - Explore curated ministry themes\n"
+    "/more - Receive next teaching in your active series\n"
     "/help - Show this guide\n\n"
-    "Search Tips:\n"
-    "• Natural language works best. Rather than just a single word, describe what you are looking for (e.g., 'how to conquer fear and anxiety' or 'wisdom for expanding my business').\n"
-    "• Messages are playable directly inside this chat.\n"
-    "• Type 'more' anytime after receiving recommendations to view the next set."
+    "<b>Search Tips:</b>\n"
+    "• Speak freely in natural words. Rather than just a single term, describe what you are walking through (e.g., 'wisdom for expanding my enterprise' or 'how to stretch in prayer and conquer fear').\n"
+    "• Audio messages are playable directly inside this chat.\n"
+    "• Type 'more' or 'next' anytime to advance to the next sermon in the series."
 )
 
 CATEGORIES_KEYBOARD = InlineKeyboardMarkup([
     [
-        InlineKeyboardButton("Business & Finances", callback_data="cat:Finances & Business"),
-        InlineKeyboardButton("Marriage & Family", callback_data="cat:Marriage & Family"),
+        InlineKeyboardButton("Prayer & Spiritual Encounters", callback_data="cat:Prayer & Spiritual Encounters"),
     ],
     [
-        InlineKeyboardButton("Healing & Wellbeing", callback_data="cat:Healing & Health"),
-        InlineKeyboardButton("Prayer & Faith", callback_data="cat:Faith & Prayer"),
+        InlineKeyboardButton("Supernatural Business & Wealth", callback_data="cat:Supernatural Business & Wealth"),
+        InlineKeyboardButton("Marriage, Family & Fruitfulness", callback_data="cat:Marriage, Family & Fruitfulness"),
     ],
     [
-        InlineKeyboardButton("Purpose & Destiny", callback_data="cat:Purpose & Destiny"),
-    ]
+        InlineKeyboardButton("Health, Wholeness & Healing", callback_data="cat:Health, Wholeness & Healing"),
+        InlineKeyboardButton("Purpose, Calling & Destiny", callback_data="cat:Purpose, Calling & Destiny"),
+    ],
 ])
 
 
@@ -211,16 +270,20 @@ async def start_command(update: Update, context: CallbackContext) -> None:
             query_text="/start",
             message_ids=[],
         )
-    await update.message.reply_text(WELCOME)
+    welcome_text = get_welcome_message(user)
+    await update.message.reply_text(welcome_text, parse_mode="HTML")
 
 
 async def help_command(update: Update, context: CallbackContext) -> None:
-    await update.message.reply_text(HELP_TEXT)
+    await update.message.reply_text(HELP_TEXT, parse_mode="HTML")
 
 
 async def categories_command(update: Update, context: CallbackContext) -> None:
+    user = update.effective_user
+    name = (user.first_name if user and user.first_name else "").strip() or "Beloved"
     await update.message.reply_text(
-        "Select a ministry theme to explore sermons:",
+        f"Where would you like the Lord to minister to you today, {name}?\n\n"
+        "Select a ministry theme below, or describe your situation in your own words:",
         reply_markup=CATEGORIES_KEYBOARD,
     )
 
@@ -230,18 +293,34 @@ async def deliver_sermons(
     context: CallbackContext,
     ranked_list: list,
     start_idx: int,
-    count: int = 3,
+    count: int = 2,
     query_text: str = "",
     user=None,
 ):
-    """Deliver a batch of playable audio messages directly to the chat."""
+    """Deliver pastoral guidance and a batch of playable audio messages directly to the chat."""
     batch = ranked_list[start_idx : start_idx + count]
     if not batch:
         await context.bot.send_message(
             chat_id=chat_id,
-            text="You have reached the end of the available messages on this topic. Type a new topic to explore further.",
+            text="You have reached the end of the available messages on this topic. Type a new topic or select /categories to explore further.",
         )
         return
+
+    user_name = (user.first_name if user and user.first_name else "").strip() or "Beloved"
+
+    # On the first batch of a topic, deliver pastoral synthesis & prophetic confession
+    if start_idx == 0 and query_text:
+        top_sermon = batch[0][0]
+        try:
+            guidance = await asyncio.to_thread(synthesize_pastoral_guidance, user_name, query_text, top_sermon)
+            if guidance:
+                await context.bot.send_message(
+                    chat_id=chat_id,
+                    text=f"{guidance}\n\n<i>Here is the prophetic message to anchor this in your spirit today:</i>",
+                    parse_mode="HTML",
+                )
+        except Exception:
+            logging.exception("Error sending pastoral guidance")
 
     seen_ids = context.user_data.setdefault("seen_ids", set())
     delivered_ids = []
@@ -282,14 +361,14 @@ async def deliver_sermons(
     new_offset = start_idx + len(batch)
     context.user_data["offset"] = new_offset
 
-    # Show pagination button if more results remain
+    # Show pastoral pagination prompt if more results remain
     if new_offset < len(ranked_list):
         more_keyboard = InlineKeyboardMarkup([
-            [InlineKeyboardButton("More Messages", callback_data="action:more")]
+            [InlineKeyboardButton("Next Teaching in this Series", callback_data="action:more")]
         ])
         await context.bot.send_message(
             chat_id=chat_id,
-            text=f"Showing {new_offset} of {len(ranked_list)} relevant messages. Tap below or type 'more' for the next batch.",
+            text=f"{user_name}, meditate on this teaching today. When you are ready for the next message in this series, tap below or type 'more'.",
             reply_markup=more_keyboard,
         )
 
@@ -410,7 +489,9 @@ async def on_callback_query(update: Update, context: CallbackContext) -> None:
         )
     elif data.startswith("cat:"):
         cat_name = data.split("cat:", 1)[1]
-        await query.message.reply_text(f"Searching for messages in {cat_name}...")
+        user = update.effective_user
+        name = (user.first_name if user and user.first_name else "").strip() or "Beloved"
+        await query.message.reply_text(f"Seeking prophetic guidance in {cat_name} for you, {name}...")
         seen_ids = context.user_data.get("seen_ids", set())
         ranked = await asyncio.to_thread(rank_messages, cat_name, seen_ids)
         context.user_data["last_ranked"] = ranked
@@ -420,7 +501,7 @@ async def on_callback_query(update: Update, context: CallbackContext) -> None:
             context=context,
             ranked_list=ranked,
             start_idx=0,
-            count=3,
+            count=2,
             query_text=cat_name,
             user=update.effective_user,
         )
@@ -429,23 +510,24 @@ async def on_callback_query(update: Update, context: CallbackContext) -> None:
 def is_more_request(text: str) -> tuple[bool, int]:
     """Check if a user is asking for more messages and parse requested count."""
     clean = text.lower().strip()
-    if clean in ["more", "show more", "give me more", "next", "more messages", "continue"]:
-        return True, 3
+    if clean in ["more", "show more", "give me more", "next", "more messages", "continue", "next sermon", "next message"]:
+        return True, 2
     # Matches patterns like "5 more", "10 more", "give me 5 more"
     match = re.search(r"\b(\d+)\s+more\b", clean)
     if match:
-        count = min(int(match.group(1)), 10)
+        count = min(int(match.group(1)), 5)
         return True, count
-    return False, 3
+    return False, 2
 
 
 async def handle_message(update: Update, context: CallbackContext):
     user_query = update.message.text or ""
+    user = update.effective_user
+    name = (user.first_name if user and user.first_name else "").strip() or "Beloved"
 
     # First-time user onboarding
     if not context.user_data.get("greeted"):
         context.user_data["greeted"] = True
-        user = update.effective_user
         if user:
             analytics.record_query(
                 user_id=user.id,
@@ -454,7 +536,8 @@ async def handle_message(update: Update, context: CallbackContext):
                 query_text="/start",
                 message_ids=[],
             )
-        await update.message.reply_text(WELCOME)
+        welcome_text = get_welcome_message(user)
+        await update.message.reply_text(welcome_text, parse_mode="HTML")
         return
 
     # Check if this is a pagination request
@@ -463,7 +546,7 @@ async def handle_message(update: Update, context: CallbackContext):
         last_ranked = context.user_data.get("last_ranked")
         if not last_ranked:
             await update.message.reply_text(
-                "You have not searched for a topic yet. Type a topic or question to receive recommendations."
+                f"{name}, you have not searched for a topic yet. Type a topic or select /categories to begin."
             )
             return
         offset = context.user_data.get("offset", 0)
@@ -478,7 +561,7 @@ async def handle_message(update: Update, context: CallbackContext):
         )
         return
 
-    await update.message.reply_text("Searching for relevant messages...")
+    await update.message.reply_text(f"Searching for messages for you, {name}...")
 
     try:
         seen_ids = context.user_data.get("seen_ids", set())
@@ -497,7 +580,7 @@ async def handle_message(update: Update, context: CallbackContext):
         context=context,
         ranked_list=ranked,
         start_idx=0,
-        count=3,
+        count=2,
         query_text=user_query,
         user=update.effective_user,
     )
