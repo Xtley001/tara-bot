@@ -27,6 +27,7 @@ from telegram.ext import (
 )
 import analytics
 import discipleship
+import series_manager
 
 load_dotenv()
 
@@ -76,6 +77,7 @@ def load_jsonl(path: str) -> list:
 
 MESSAGES = load_jsonl(MESSAGES_PATH)
 NORMED_MESSAGE_EMBEDDINGS = None
+series_manager.init_series_engine(MESSAGES)
 
 
 def openai_api_request(endpoint: str, payload: dict, timeout: int = 15) -> dict:
@@ -345,19 +347,40 @@ async def deliver_sermons(
     user=None,
 ):
     """Deliver pastoral guidance and a batch of playable audio messages directly to the chat."""
-    batch = ranked_list[start_idx : start_idx + count]
-    if not batch:
+    if not ranked_list or start_idx >= len(ranked_list):
         await context.bot.send_message(
             chat_id=chat_id,
             text="You have reached the end of the available messages on this topic. Type a new topic or select /categories to explore further.",
         )
         return
 
+    # Select teachings from ranked_list (each element in ranked_list is a list of sermon parts)
+    selected_teachings = []
+    total_parts = 0
+    curr_idx = start_idx
+
+    while curr_idx < len(ranked_list):
+        teaching = ranked_list[curr_idx]
+        if not selected_teachings:
+            selected_teachings.append(teaching)
+            total_parts += len(teaching)
+            curr_idx += 1
+            # If this first teaching is already a multi-part series, deliver the complete series
+            if total_parts >= 2:
+                break
+        else:
+            # If previous was 1 standalone sermon and next teaching fits
+            if total_parts < count:
+                selected_teachings.append(teaching)
+                total_parts += len(teaching)
+                curr_idx += 1
+            break
+
     user_name = (user.first_name if user and user.first_name else "").strip() or "Beloved"
 
     # On the first batch of a topic, deliver pastoral synthesis & prophetic confession
-    if start_idx == 0 and query_text:
-        top_sermon = batch[0][0]
+    if start_idx == 0 and query_text and selected_teachings:
+        top_sermon = selected_teachings[0][0]
         try:
             guidance = await asyncio.to_thread(synthesize_pastoral_guidance, user_name, query_text, top_sermon)
             if guidance:
@@ -371,50 +394,88 @@ async def deliver_sermons(
 
     seen_ids = context.user_data.setdefault("seen_ids", set())
     delivered_ids = []
+    sermon_counter = context.user_data.get("sermon_counter", 0)
 
-    for i, (msg, _) in enumerate(batch, start_idx + 1):
-        title = get_sermon_title(msg)
-        safe_title = html.escape(title)
-        text = msg.get("text", "")
+    for teaching in selected_teachings:
+        for msg in teaching:
+            sermon_counter += 1
+            title = msg.get("display_title") or get_sermon_title(msg)
+            safe_title = html.escape(title)
+            text = msg.get("text", "")
 
-        # Clean text snippet by removing repetitive boilerplate
-        clean_text = re.sub(r"(Download|Listen)[\.\s]+(Share[\.\s]+)?Be\s+Transformed.*", "", text, flags=re.I).strip()
-        if len(clean_text) > 260:
-            snippet = clean_text[:260].rsplit(" ", 1)[0] + "..."
-        else:
-            snippet = clean_text
-        safe_snippet = html.escape(snippet)
+            # Clean text snippet by removing repetitive boilerplate
+            clean_text = re.sub(r"(Download|Listen)[\.\s]+(Share[\.\s]+)?Be\s+Transformed.*", "", text, flags=re.I).strip()
+            if len(clean_text) > 260:
+                snippet = clean_text[:260].rsplit(" ", 1)[0] + "..."
+            else:
+                snippet = clean_text
+            safe_snippet = html.escape(snippet)
 
-        link = msg.get("channel_link", "")
-        audio_message_id = msg.get("message_id")
-        from_channel = msg.get("from_chat_id") or (f"@{msg['channel']}" if msg.get("channel") else "@pst_tara")
-        keyboard = InlineKeyboardMarkup([[InlineKeyboardButton("Open in Channel", url=link)]]) if link else None
-        caption = f"<b>{i}. {safe_title}</b>\n\n{safe_snippet}"
+            link = msg.get("channel_link", "") or msg.get("url", "")
+            audio_message_id = msg.get("message_id")
+            audio_url = msg.get("audio_url", "")
+            from_channel = msg.get("from_chat_id") or (f"@{msg['channel']}" if msg.get("channel") else "@pst_tara")
 
-        if audio_message_id:
-            delivered_ids.append(audio_message_id)
-            seen_ids.add(audio_message_id)
+            caption = f"<b>{sermon_counter}. {safe_title}</b>\n\n{safe_snippet}"
 
-        try:
-            await context.bot.copy_message(
-                chat_id=chat_id,
-                from_chat_id=from_channel,
-                message_id=audio_message_id,
-                caption=caption,
-                parse_mode="HTML",
-                reply_markup=keyboard,
-            )
-        except Exception:
-            logging.exception(f"Failed to copy audio for message {audio_message_id}")
-            await context.bot.send_message(
-                chat_id=chat_id,
-                text=caption,
-                parse_mode="HTML",
-                reply_markup=keyboard,
-                disable_web_page_preview=True,
-            )
+            if audio_message_id:
+                delivered_ids.append(audio_message_id)
+                seen_ids.add(audio_message_id)
+                keyboard = InlineKeyboardMarkup([[InlineKeyboardButton("Open in Channel", url=link)]]) if link else None
 
-    new_offset = start_idx + len(batch)
+                try:
+                    await context.bot.copy_message(
+                        chat_id=chat_id,
+                        from_chat_id=from_channel,
+                        message_id=audio_message_id,
+                        caption=caption,
+                        parse_mode="HTML",
+                        reply_markup=keyboard,
+                    )
+                except Exception:
+                    logging.exception(f"Failed to copy audio for message {audio_message_id}")
+                    await context.bot.send_message(
+                        chat_id=chat_id,
+                        text=caption,
+                        parse_mode="HTML",
+                        reply_markup=keyboard,
+                        disable_web_page_preview=True,
+                    )
+            elif audio_url:
+                buttons = [[InlineKeyboardButton("🎧 Listen Online", url=audio_url)]]
+                if link and link != audio_url:
+                    buttons.append([InlineKeyboardButton("Open Sermon Page", url=link)])
+                keyboard = InlineKeyboardMarkup(buttons)
+
+                try:
+                    await context.bot.send_audio(
+                        chat_id=chat_id,
+                        audio=audio_url,
+                        caption=caption,
+                        parse_mode="HTML",
+                        reply_markup=keyboard,
+                    )
+                except Exception:
+                    logging.exception(f"Failed to stream audio URL {audio_url}")
+                    await context.bot.send_message(
+                        chat_id=chat_id,
+                        text=caption,
+                        parse_mode="HTML",
+                        reply_markup=keyboard,
+                        disable_web_page_preview=True,
+                    )
+            else:
+                keyboard = InlineKeyboardMarkup([[InlineKeyboardButton("Open in Channel", url=link)]]) if link else None
+                await context.bot.send_message(
+                    chat_id=chat_id,
+                    text=caption,
+                    parse_mode="HTML",
+                    reply_markup=keyboard,
+                    disable_web_page_preview=True,
+                )
+
+    context.user_data["sermon_counter"] = sermon_counter
+    new_offset = curr_idx
     context.user_data["offset"] = new_offset
 
     # Show pastoral pagination prompt if more results remain
@@ -562,12 +623,14 @@ async def on_callback_query(update: Update, context: CallbackContext) -> None:
         await query.message.reply_text(f"Seeking prophetic guidance in {cat_name} for you, {name}...")
         seen_ids = context.user_data.get("seen_ids", set())
         ranked = await asyncio.to_thread(rank_messages, cat_name, seen_ids)
-        context.user_data["last_ranked"] = ranked
+        grouped_teachings = series_manager.group_ranked_teachings(ranked)
+        context.user_data["last_ranked"] = grouped_teachings
         context.user_data["last_query"] = cat_name
+        context.user_data["sermon_counter"] = 0
         await deliver_sermons(
             chat_id=update.effective_chat.id,
             context=context,
-            ranked_list=ranked,
+            ranked_list=grouped_teachings,
             start_idx=0,
             count=2,
             query_text=cat_name,
@@ -638,18 +701,20 @@ async def handle_message(update: Update, context: CallbackContext):
         seen_ids = context.user_data.get("seen_ids", set())
         # Offload synchronous OpenAI call and ranking with freshness deduplication
         ranked = await asyncio.to_thread(rank_messages, user_query, seen_ids)
+        grouped_teachings = series_manager.group_ranked_teachings(ranked)
     except Exception as e:
         logging.exception("rank_messages failed")
         await update.message.reply_text(f"Sorry, something went wrong: {e}")
         return
 
-    context.user_data["last_ranked"] = ranked
+    context.user_data["last_ranked"] = grouped_teachings
     context.user_data["last_query"] = user_query
+    context.user_data["sermon_counter"] = 0
 
     await deliver_sermons(
         chat_id=update.effective_chat.id,
         context=context,
-        ranked_list=ranked,
+        ranked_list=grouped_teachings,
         start_idx=0,
         count=2,
         query_text=user_query,
