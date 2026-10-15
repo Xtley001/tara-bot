@@ -26,6 +26,7 @@ from telegram.ext import (
     filters,
 )
 import analytics
+import discipleship
 
 load_dotenv()
 
@@ -197,9 +198,26 @@ def rank_messages(user_query: str, seen_ids: set = None) -> list:
     return results
 
 
-def get_welcome_message(user) -> str:
+def get_welcome_message(user, profile: dict = None) -> tuple[str, InlineKeyboardMarkup]:
     name = (user.first_name if user and user.first_name else "").strip() or "Beloved"
-    return (
+    last_topic = profile.get("last_topic") if profile else None
+
+    # Returning discipleship continuity
+    if last_topic and profile and profile.get("visit_count", 0) > 1:
+        text = (
+            f"Welcome back, {name}.\n\n"
+            f"It is a blessing to minister alongside you again. Last time, you were meditating on:\n"
+            f"• <b>{html.escape(last_topic)}</b>\n\n"
+            f"Would you like to continue in this series, or explore a new spiritual theme today?\n\n"
+            "<i>Type any question on your heart, or choose below:</i>"
+        )
+        keyboard = InlineKeyboardMarkup([
+            [InlineKeyboardButton(f"Continue: {last_topic[:26]}...", callback_data=f"cat:{last_topic}")],
+            [InlineKeyboardButton("Browse Ministry Themes", callback_data="action:browse_categories")],
+        ])
+        return text, keyboard
+
+    text = (
         f"Grace and peace to you, {name}.\n\n"
         "Welcome to Pastor Tara Akinkuade's Sermon Assistant.\n\n"
         "I am here to minister alongside you—to help you discover, meditate upon, and listen to "
@@ -207,7 +225,7 @@ def get_welcome_message(user) -> str:
         "How you can engage:\n"
         "• <b>Share what is on your heart:</b> Type any life situation, spiritual question, or topic you desire breakthrough or direction in.\n"
         "• <b>Explore themes:</b> Tap /categories below to explore curated ministry themes.\n"
-        "• <b>Listen directly:</b> Messages can be played right here in Telegram or viewed in the official channel.\n\n"
+        "• <b>Listen & Bookmark:</b> Messages can be played right here in Telegram or saved to your personal library with /saved.\n\n"
         "<b>Sample topics to explore:</b>\n"
         "• <i>Building structures for financial prosperity</i>\n"
         "• <i>Stretching in prayer and spiritual encounters</i>\n"
@@ -215,6 +233,10 @@ def get_welcome_message(user) -> str:
         "• <i>Destiny realignment and the Blessing of Dominion</i>\n\n"
         "Type your question or heart desire below to begin."
     )
+    keyboard = InlineKeyboardMarkup([
+        [InlineKeyboardButton("Explore Ministry Themes", callback_data="action:browse_categories")]
+    ])
+    return text, keyboard
 
 
 HELP_TEXT = (
@@ -222,11 +244,13 @@ HELP_TEXT = (
     "<b>Commands:</b>\n"
     "/start - Welcome guide and pastoral introduction\n"
     "/categories - Explore curated ministry themes\n"
+    "/saved - View your saved sermon bookmarks\n"
     "/more - Receive next teaching in your active series\n"
     "/help - Show this guide\n\n"
     "<b>Search Tips:</b>\n"
     "• Speak freely in natural words. Rather than just a single term, describe what you are walking through (e.g., 'wisdom for expanding my enterprise' or 'how to stretch in prayer and conquer fear').\n"
     "• Audio messages are playable directly inside this chat.\n"
+    "• Tap '⭐ Bookmark' under any message to save it to your personal library (/saved).\n"
     "• Type 'more' or 'next' anytime to advance to the next sermon in the series."
 )
 
@@ -248,8 +272,9 @@ CATEGORIES_KEYBOARD = InlineKeyboardMarkup([
 async def post_init(application: Application):
     """Register top commands with Telegram menu."""
     commands = [
-        BotCommand("start", "Welcome guide and introduction"),
+        BotCommand("start", "Welcome guide and pastoral introduction"),
         BotCommand("categories", "Browse sermons by ministry theme"),
+        BotCommand("saved", "View your saved sermon bookmarks"),
         BotCommand("more", "Deliver additional messages from recent search"),
         BotCommand("help", "Search instructions and tips"),
     ]
@@ -262,7 +287,10 @@ async def post_init(application: Application):
 async def start_command(update: Update, context: CallbackContext) -> None:
     context.user_data["greeted"] = True
     user = update.effective_user
+    profile = {}
     if user:
+        profile = discipleship.get_user_profile(user.id)
+        discipleship.record_user_visit_and_topic(user.id, user.first_name, user.username)
         analytics.record_query(
             user_id=user.id,
             username=user.username,
@@ -270,8 +298,8 @@ async def start_command(update: Update, context: CallbackContext) -> None:
             query_text="/start",
             message_ids=[],
         )
-    welcome_text = get_welcome_message(user)
-    await update.message.reply_text(welcome_text, parse_mode="HTML")
+    welcome_text, reply_markup = get_welcome_message(user, profile)
+    await update.message.reply_text(welcome_text, parse_mode="HTML", reply_markup=reply_markup)
 
 
 async def help_command(update: Update, context: CallbackContext) -> None:
@@ -332,7 +360,12 @@ async def deliver_sermons(
         link = msg.get("channel_link", "")
         audio_message_id = msg.get("message_id")
         from_channel = msg.get("from_chat_id") or (f"@{msg['channel']}" if msg.get("channel") else "@pst_tara")
-        keyboard = InlineKeyboardMarkup([[InlineKeyboardButton("Open in Channel", url=link)]]) if link else None
+        buttons = []
+        if link:
+            buttons.append(InlineKeyboardButton("Open in Channel", url=link))
+        if audio_message_id:
+            buttons.append(InlineKeyboardButton("⭐ Bookmark", callback_data=f"bm:{audio_message_id}"))
+        keyboard = InlineKeyboardMarkup([buttons]) if buttons else None
         caption = f"<b>{i}.</b> {safe_snippet}"
 
         if audio_message_id:
@@ -372,8 +405,9 @@ async def deliver_sermons(
             reply_markup=more_keyboard,
         )
 
-    # Record analytics
+    # Record analytics and discipleship journey
     if user and query_text:
+        discipleship.record_user_visit_and_topic(user.id, user.first_name, user.username, query_text)
         analytics.record_query(
             user_id=user.id,
             username=user.username,
@@ -447,6 +481,34 @@ async def stats_command(update: Update, context: CallbackContext) -> None:
     await update.message.reply_text(stats_msg)
 
 
+async def saved_command(update: Update, context: CallbackContext) -> None:
+    """Show the believer's saved / bookmarked sermons."""
+    user = update.effective_user
+    name = (user.first_name if user and user.first_name else "").strip() or "Beloved"
+    bookmarks = discipleship.get_bookmarks(user.id)
+    if not bookmarks:
+        await update.message.reply_text(
+            f"{name}, you have not bookmarked any sermons yet.\n\n"
+            "When you discover a message that ministers to you, tap the <b>⭐ Bookmark</b> button below it "
+            "to save it to your personal spiritual library.",
+            parse_mode="HTML",
+        )
+        return
+
+    lines = [f"<b>Your Saved Teachings, {name}</b> ({len(bookmarks)} total):\n"]
+    keyboard_rows = []
+    for i, bm in enumerate(bookmarks[:8], 1):
+        title = bm["title"]
+        link = bm.get("channel_link", "")
+        lines.append(f"{i}. <b>{html.escape(title)}</b>")
+        if link:
+            keyboard_rows.append([InlineKeyboardButton(f"{i}. Listen: {title[:28]}...", url=link)])
+
+    msg_text = "\n".join(lines) + "\n\n<i>Tap a message below to listen directly in the channel:</i>"
+    reply_markup = InlineKeyboardMarkup(keyboard_rows) if keyboard_rows else None
+    await update.message.reply_text(msg_text, parse_mode="HTML", reply_markup=reply_markup)
+
+
 async def myid_command(update: Update, context: CallbackContext) -> None:
     """Help user check their Telegram User ID and admin status."""
     user = update.effective_user
@@ -472,7 +534,26 @@ async def on_callback_query(update: Update, context: CallbackContext) -> None:
     await query.answer()
 
     data = query.data or ""
-    if data == "action:more":
+    if data == "action:browse_categories":
+        user = update.effective_user
+        name = (user.first_name if user and user.first_name else "").strip() or "Beloved"
+        await query.message.reply_text(
+            f"Where would you like the Lord to minister to you today, {name}?\n\n"
+            "Select a ministry theme below, or describe your situation in your own words:",
+            reply_markup=CATEGORIES_KEYBOARD,
+        )
+    elif data.startswith("bm:"):
+        msg_id_str = data.split("bm:", 1)[1]
+        if msg_id_str.isdigit():
+            msg_id = int(msg_id_str)
+            matched = next((m for m in MESSAGES if m.get("message_id") == msg_id), None)
+            title = (matched.get("audio_filename", "") or "").replace(".mp3", "") or (matched.get("text", "")[:60] if matched else f"Sermon #{msg_id}")
+            link = matched.get("channel_link", "") if matched else ""
+            discipleship.bookmark_sermon(query.from_user.id, msg_id, title, link)
+            await query.answer("⭐ Saved to your personal spiritual library! Access anytime with /saved", show_alert=False)
+        else:
+            await query.answer()
+    elif data == "action:more":
         last_ranked = context.user_data.get("last_ranked")
         if not last_ranked:
             await query.message.reply_text("Type a topic to start a new search.")
@@ -528,7 +609,10 @@ async def handle_message(update: Update, context: CallbackContext):
     # First-time user onboarding
     if not context.user_data.get("greeted"):
         context.user_data["greeted"] = True
+        profile = {}
         if user:
+            profile = discipleship.get_user_profile(user.id)
+            discipleship.record_user_visit_and_topic(user.id, user.first_name, user.username)
             analytics.record_query(
                 user_id=user.id,
                 username=user.username,
@@ -536,8 +620,8 @@ async def handle_message(update: Update, context: CallbackContext):
                 query_text="/start",
                 message_ids=[],
             )
-        welcome_text = get_welcome_message(user)
-        await update.message.reply_text(welcome_text, parse_mode="HTML")
+        welcome_text, reply_markup = get_welcome_message(user, profile)
+        await update.message.reply_text(welcome_text, parse_mode="HTML", reply_markup=reply_markup)
         return
 
     # Check if this is a pagination request
@@ -631,6 +715,7 @@ def main():
     application.add_handler(CommandHandler("start", start_command))
     application.add_handler(CommandHandler("help", help_command))
     application.add_handler(CommandHandler("categories", categories_command))
+    application.add_handler(CommandHandler("saved", saved_command))
     application.add_handler(CommandHandler("more", more_command))
     application.add_handler(CommandHandler("stats", stats_command))
     application.add_handler(CommandHandler("myid", myid_command))
