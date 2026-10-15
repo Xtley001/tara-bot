@@ -1,38 +1,44 @@
 import asyncio
+import html
 import http.server
 import json
-import openai
+import logging
 import os
 import threading
 import numpy as np
-import logging
-from telegram import Update
-from telegram.ext import Application, CommandHandler, MessageHandler, filters, CallbackContext
+import openai
 from dotenv import load_dotenv
+from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Update
+from telegram.ext import Application, CallbackContext, CommandHandler, MessageHandler, filters
 
 load_dotenv()
+
+logging.basicConfig(
+    format="%(asctime)s - %(levelname)s - %(message)s", level=logging.INFO
+)
 
 TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY") or os.getenv("API_KEY")
 
+if not TELEGRAM_BOT_TOKEN:
+    logging.warning("TELEGRAM_BOT_TOKEN is not set. The bot will fail to start.")
+if not OPENAI_API_KEY:
+    logging.warning("OPENAI_API_KEY is not set. Embeddings generation will fail.")
+
 client = openai.OpenAI(api_key=OPENAI_API_KEY)
 
-logging.basicConfig(
-    format="%(asctime)s - %(levelname)s - %(message)s", level=logging.INFO)
+BASE_DIR = os.path.dirname(__file__)
+MESSAGES_PATH = os.path.join(BASE_DIR, "utilities", "channel_messages.jsonl")
+EMBEDDINGS_CACHE_PATH = os.path.join(BASE_DIR, "utilities", "channel_embeddings.npy")
 
 
-def load_jsonl(path):
+def load_jsonl(path: str) -> list:
     with open(path, encoding="utf-8") as f:
         return [json.loads(line) for line in f if line.strip()]
 
 
-BASE_DIR = os.path.dirname(__file__)
-MESSAGES = load_jsonl(os.path.join(BASE_DIR, "utilities", "channel_messages.jsonl"))
-MESSAGE_EMBEDDINGS = None
-
-
-def cosine_similarity(vec1, vec2):
-    return np.dot(vec1, vec2.T) / (np.linalg.norm(vec1) * np.linalg.norm(vec2, axis=1, keepdims=True))
+MESSAGES = load_jsonl(MESSAGES_PATH)
+NORMED_MESSAGE_EMBEDDINGS = None
 
 
 def get_embeddings(texts: list) -> np.ndarray:
@@ -45,9 +51,31 @@ def get_embeddings(texts: list) -> np.ndarray:
     return np.array(all_embeddings)
 
 
+def get_or_load_embeddings() -> np.ndarray:
+    """Load precomputed embeddings from disk if available, otherwise compute and cache them."""
+    if os.path.exists(EMBEDDINGS_CACHE_PATH):
+        logging.info(f"Loading cached embeddings from {EMBEDDINGS_CACHE_PATH}...")
+        embeddings = np.load(EMBEDDINGS_CACHE_PATH)
+        if len(embeddings) == len(MESSAGES):
+            logging.info(f"Loaded {len(embeddings)} cached embeddings in milliseconds.")
+            return embeddings
+        logging.warning("Embeddings cache size mismatch with channel_messages.jsonl; re-computing...")
+
+    logging.info("Computing channel message embeddings from OpenAI API...")
+    embeddings = get_embeddings([m["text"] for m in MESSAGES])
+    try:
+        np.save(EMBEDDINGS_CACHE_PATH, embeddings)
+        logging.info(f"Saved embeddings cache to {EMBEDDINGS_CACHE_PATH}.")
+    except Exception as e:
+        logging.warning(f"Could not save embeddings cache: {e}")
+    return embeddings
+
+
 def rank_messages(user_query: str) -> list:
-    query_embedding = get_embeddings([user_query])
-    scores = cosine_similarity(query_embedding, MESSAGE_EMBEDDINGS)[0]
+    """Compute query embedding and rank messages via normalized cosine similarity."""
+    query_emb = get_embeddings([user_query])
+    query_norm = query_emb / (np.linalg.norm(query_emb, axis=1, keepdims=True) + 1e-10)
+    scores = np.dot(NORMED_MESSAGE_EMBEDDINGS, query_norm.T).flatten()
     return sorted(zip(MESSAGES, scores), key=lambda x: x[1], reverse=True)
 
 
@@ -64,8 +92,6 @@ async def start(update: Update, context: CallbackContext) -> None:
 
 
 async def handle_message(update: Update, context: CallbackContext):
-    from telegram import InlineKeyboardButton, InlineKeyboardMarkup
-
     user_query = update.message.text
 
     if not context.user_data.get("greeted"):
@@ -76,7 +102,8 @@ async def handle_message(update: Update, context: CallbackContext):
     await update.message.reply_text("Searching for messages to help you...")
 
     try:
-        ranked = rank_messages(user_query)
+        # Offload synchronous OpenAI call and ranking to thread to avoid blocking asyncio loop
+        ranked = await asyncio.to_thread(rank_messages, user_query)
     except Exception as e:
         logging.exception("rank_messages failed")
         await update.message.reply_text(f"Sorry, something went wrong: {e}")
@@ -85,23 +112,24 @@ async def handle_message(update: Update, context: CallbackContext):
     for i, (msg, _) in enumerate(ranked[:5], 1):
         text = msg.get("text", "")
         snippet = text[:300].rsplit(" ", 1)[0] + "..." if len(text) > 300 else text
+        safe_snippet = html.escape(snippet)
         link = msg.get("channel_link", "")
         audio_message_id = msg.get("message_id")
         photo_message_id = msg.get("photo_message_id")
         keyboard = InlineKeyboardMarkup([[InlineKeyboardButton("📢 Open in channel", url=link)]]) if link else None
 
-        # Send cover art with text snippet
-        try:
-            if photo_message_id:
+        # Send cover art with text snippet using safe HTML parsing
+        if photo_message_id:
+            try:
                 await context.bot.copy_message(
                     chat_id=update.effective_chat.id,
                     from_chat_id="@pst_tara",
                     message_id=photo_message_id,
-                    caption=f"*{i}.* {snippet}",
-                    parse_mode="Markdown",
+                    caption=f"<b>{i}.</b> {safe_snippet}",
+                    parse_mode="HTML",
                 )
-        except Exception:
-            logging.exception(f"Failed to send cover art for result {i}")
+            except Exception:
+                logging.exception(f"Failed to send cover art for result {i}")
 
         # Send the audio file so the user can play it directly
         try:
@@ -111,15 +139,23 @@ async def handle_message(update: Update, context: CallbackContext):
                 message_id=audio_message_id,
                 reply_markup=keyboard,
             )
-        except Exception as e:
+        except Exception:
             logging.exception(f"Failed to send audio for result {i}")
-            await update.message.reply_text(f"*{i}.* {snippet}", parse_mode="Markdown", reply_markup=keyboard, disable_web_page_preview=True)
+            await update.message.reply_text(
+                f"<b>{i}.</b> {safe_snippet}",
+                parse_mode="HTML",
+                reply_markup=keyboard,
+                disable_web_page_preview=True,
+            )
 
 
 def main():
-    global MESSAGE_EMBEDDINGS
-    logging.info("Pre-computing channel message embeddings...")
-    MESSAGE_EMBEDDINGS = get_embeddings([m["text"] for m in MESSAGES])
+    global NORMED_MESSAGE_EMBEDDINGS
+    raw_embeddings = get_or_load_embeddings()
+    # Pre-normalize message embeddings once to make cosine similarity a fast dot product
+    NORMED_MESSAGE_EMBEDDINGS = raw_embeddings / (
+        np.linalg.norm(raw_embeddings, axis=1, keepdims=True) + 1e-10
+    )
     logging.info(f"Ready — {len(MESSAGES)} messages indexed.")
 
     # Render Web Service port binding check
@@ -156,4 +192,3 @@ def main():
 
 if __name__ == '__main__':
     main()
-
