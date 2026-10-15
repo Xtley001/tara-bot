@@ -25,6 +25,8 @@ from telegram.ext import (
     MessageHandler,
     filters,
 )
+import analytics
+
 load_dotenv()
 
 logging.basicConfig(
@@ -33,6 +35,24 @@ logging.basicConfig(
 
 TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY") or os.getenv("API_KEY")
+
+ADMIN_IDENTIFIERS = [
+    x.strip().lstrip("@").lower()
+    for x in os.getenv("ADMIN_USER_ID", os.getenv("ADMIN_USER_IDS", "")).split(",")
+    if x.strip()
+]
+
+
+def is_admin(user) -> bool:
+    """Check if the user matches the configured ADMIN_USER_ID in env."""
+    if not user or not ADMIN_IDENTIFIERS:
+        return False
+    if str(user.id) in ADMIN_IDENTIFIERS:
+        return True
+    if user.username and user.username.lstrip("@").lower() in ADMIN_IDENTIFIERS:
+        return True
+    return False
+
 
 if not TELEGRAM_BOT_TOKEN:
     logging.warning("TELEGRAM_BOT_TOKEN is not set. The bot will fail to start.")
@@ -182,6 +202,15 @@ async def post_init(application: Application):
 
 async def start_command(update: Update, context: CallbackContext) -> None:
     context.user_data["greeted"] = True
+    user = update.effective_user
+    if user:
+        analytics.record_query(
+            user_id=user.id,
+            username=user.username,
+            first_name=user.first_name,
+            query_text="/start",
+            message_ids=[],
+        )
     await update.message.reply_text(WELCOME)
 
 
@@ -264,6 +293,16 @@ async def deliver_sermons(
             reply_markup=more_keyboard,
         )
 
+    # Record analytics
+    if user and query_text:
+        analytics.record_query(
+            user_id=user.id,
+            username=user.username,
+            first_name=user.first_name,
+            query_text=query_text,
+            message_ids=delivered_ids,
+        )
+
 
 
 async def more_command(update: Update, context: CallbackContext) -> None:
@@ -286,6 +325,64 @@ async def more_command(update: Update, context: CallbackContext) -> None:
         query_text=query_text,
         user=update.effective_user,
     )
+
+
+async def stats_command(update: Update, context: CallbackContext) -> None:
+    """Admin-only command to view ministry metrics and visitor needs."""
+    user = update.effective_user
+    if not is_admin(user):
+        # Silently ignore for non-admins so unauthorized users cannot access it
+        return
+
+    summary = analytics.get_analytics_summary()
+    total_users = summary["total_users"]
+    total_queries = summary["total_queries"]
+    active_7d = summary["active_7d"]
+    categories = summary["category_counts"]
+    recent = summary.get("recent_queries", [])
+
+    cat_lines = []
+    for cat, count in categories:
+        pct = (count / total_queries * 100) if total_queries > 0 else 0
+        cat_lines.append(f"• {cat}: {count} ({pct:.0f}%)")
+    cat_text = "\n".join(cat_lines) if cat_lines else "• No query data recorded yet."
+
+    recent_lines = []
+    for q_text, cat, dt in recent:
+        clean_q = q_text[:50].replace("\n", " ")
+        recent_lines.append(f"• \"{clean_q}\" ({cat})")
+    recent_text = "\n".join(recent_lines) if recent_lines else "• None yet."
+
+    stats_msg = (
+        "Ministry Bot Analytics Report\n\n"
+        f"Visitors & Activity:\n"
+        f"• Total Unique Visitors: {total_users}\n"
+        f"• Active Last 7 Days: {active_7d}\n"
+        f"• Total Questions Asked: {total_queries}\n\n"
+        f"Spiritual Needs Breakdown:\n"
+        f"{cat_text}\n\n"
+        f"Recent Searches:\n"
+        f"{recent_text}\n\n"
+        "Data recorded in analytics database."
+    )
+    await update.message.reply_text(stats_msg)
+
+
+async def myid_command(update: Update, context: CallbackContext) -> None:
+    """Help user check their Telegram User ID and admin status."""
+    user = update.effective_user
+    username_str = f"@{user.username}" if user.username else "No username set"
+    admin_status = "Admin (Authorized)" if is_admin(user) else "Standard User"
+    msg = (
+        f"Your Telegram Profile:\n"
+        f"• User ID: <code>{user.id}</code>\n"
+        f"• Username: {username_str}\n"
+        f"• Status: {admin_status}\n\n"
+        f"To grant admin access, set:\n"
+        f"ADMIN_USER_ID={user.id}\n"
+        f"in your environment variables."
+    )
+    await update.message.reply_text(msg, parse_mode="HTML")
 
 
 
@@ -348,6 +445,15 @@ async def handle_message(update: Update, context: CallbackContext):
     # First-time user onboarding
     if not context.user_data.get("greeted"):
         context.user_data["greeted"] = True
+        user = update.effective_user
+        if user:
+            analytics.record_query(
+                user_id=user.id,
+                username=user.username,
+                first_name=user.first_name,
+                query_text="/start",
+                message_ids=[],
+            )
         await update.message.reply_text(WELCOME)
         return
 
@@ -443,6 +549,9 @@ def main():
     application.add_handler(CommandHandler("help", help_command))
     application.add_handler(CommandHandler("categories", categories_command))
     application.add_handler(CommandHandler("more", more_command))
+    application.add_handler(CommandHandler("stats", stats_command))
+    application.add_handler(CommandHandler("myid", myid_command))
+    application.add_handler(CommandHandler("id", myid_command))
     application.add_handler(CallbackQueryHandler(on_callback_query))
     application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
 
