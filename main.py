@@ -25,8 +25,6 @@ from telegram.ext import (
     MessageHandler,
     filters,
 )
-import analytics
-
 load_dotenv()
 
 logging.basicConfig(
@@ -35,11 +33,6 @@ logging.basicConfig(
 
 TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY") or os.getenv("API_KEY")
-ADMIN_IDS = [
-    int(x.strip())
-    for x in os.getenv("ADMIN_USER_IDS", "").split(",")
-    if x.strip().isdigit()
-]
 
 if not TELEGRAM_BOT_TOKEN:
     logging.warning("TELEGRAM_BOT_TOKEN is not set. The bot will fail to start.")
@@ -141,8 +134,7 @@ WELCOME = (
     "/start - Welcome guide and introduction\n"
     "/categories - Browse sermons by ministry theme\n"
     "/more - Deliver additional messages from your last search\n"
-    "/help - Search instructions and tips\n"
-    "/stats - View visitor numbers and spiritual needs stats\n\n"
+    "/help - Search instructions and tips\n\n"
     "Type your topic or question below to begin."
 )
 
@@ -152,8 +144,7 @@ HELP_TEXT = (
     "/start - Welcome guide and introduction\n"
     "/categories - Browse curated ministry themes\n"
     "/more - Deliver additional messages from your last search\n"
-    "/help - Show this guide\n"
-    "/stats - View ministry visitor metrics (Admin)\n\n"
+    "/help - Show this guide\n\n"
     "Search Tips:\n"
     "• Natural language works best. Rather than just a single word, describe what you are looking for (e.g., 'how to conquer fear and anxiety' or 'wisdom for expanding my business').\n"
     "• Messages are playable directly inside this chat.\n"
@@ -182,7 +173,6 @@ async def post_init(application: Application):
         BotCommand("categories", "Browse sermons by ministry theme"),
         BotCommand("more", "Deliver additional messages from recent search"),
         BotCommand("help", "Search instructions and tips"),
-        BotCommand("stats", "Visitor metrics and spiritual needs stats"),
     ]
     try:
         await application.bot.set_my_commands(commands)
@@ -192,14 +182,6 @@ async def post_init(application: Application):
 
 async def start_command(update: Update, context: CallbackContext) -> None:
     context.user_data["greeted"] = True
-    user = update.effective_user
-    analytics.record_query(
-        user_id=user.id,
-        username=user.username,
-        first_name=user.first_name,
-        query_text="/start",
-        message_ids=[],
-    )
     await update.message.reply_text(WELCOME)
 
 
@@ -282,15 +264,6 @@ async def deliver_sermons(
             reply_markup=more_keyboard,
         )
 
-    # Record analytics
-    if user and query_text:
-        analytics.record_query(
-            user_id=user.id,
-            username=user.username,
-            first_name=user.first_name,
-            query_text=query_text,
-            message_ids=delivered_ids,
-        )
 
 
 async def more_command(update: Update, context: CallbackContext) -> None:
@@ -315,36 +288,6 @@ async def more_command(update: Update, context: CallbackContext) -> None:
     )
 
 
-async def stats_command(update: Update, context: CallbackContext) -> None:
-    """Admin command to view ministry metrics and visitor needs."""
-    user = update.effective_user
-    if ADMIN_IDS and user.id not in ADMIN_IDS:
-        await update.message.reply_text("This command is restricted to ministry administrators.")
-        return
-
-    summary = analytics.get_analytics_summary()
-    total_users = summary["total_users"]
-    total_queries = summary["total_queries"]
-    active_7d = summary["active_7d"]
-    categories = summary["category_counts"]
-
-    cat_lines = []
-    for cat, count in categories:
-        pct = (count / total_queries * 100) if total_queries > 0 else 0
-        cat_lines.append(f"• {cat}: {count} ({pct:.0f}%)")
-    cat_text = "\n".join(cat_lines) if cat_lines else "• No query data recorded yet."
-
-    stats_msg = (
-        "Ministry Bot Analytics Report\n\n"
-        f"Visitors & Activity:\n"
-        f"• Total Unique Visitors: {total_users}\n"
-        f"• Active Last 7 Days: {active_7d}\n"
-        f"• Total Questions Asked: {total_queries}\n\n"
-        f"Spiritual Needs Breakdown:\n"
-        f"{cat_text}\n\n"
-        "Data recorded in analytics database."
-    )
-    await update.message.reply_text(stats_msg)
 
 
 async def on_callback_query(update: Update, context: CallbackContext) -> None:
@@ -405,14 +348,6 @@ async def handle_message(update: Update, context: CallbackContext):
     # First-time user onboarding
     if not context.user_data.get("greeted"):
         context.user_data["greeted"] = True
-        user = update.effective_user
-        analytics.record_query(
-            user_id=user.id,
-            username=user.username,
-            first_name=user.first_name,
-            query_text="/start",
-            message_ids=[],
-        )
         await update.message.reply_text(WELCOME)
         return
 
@@ -508,7 +443,6 @@ def main():
     application.add_handler(CommandHandler("help", help_command))
     application.add_handler(CommandHandler("categories", categories_command))
     application.add_handler(CommandHandler("more", more_command))
-    application.add_handler(CommandHandler("stats", stats_command))
     application.add_handler(CallbackQueryHandler(on_callback_query))
     application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
 
