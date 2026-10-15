@@ -28,11 +28,15 @@ if not OPENAI_API_KEY:
 client = openai.OpenAI(api_key=OPENAI_API_KEY)
 
 BASE_DIR = os.path.dirname(__file__)
-MESSAGES_PATH = os.path.join(BASE_DIR, "utilities", "channel_messages.jsonl")
+COMBINED_PATH = os.path.join(BASE_DIR, "utilities", "combined_channel_messages.jsonl")
+PRIMARY_PATH = os.path.join(BASE_DIR, "utilities", "channel_messages.jsonl")
+MESSAGES_PATH = COMBINED_PATH if os.path.exists(COMBINED_PATH) else PRIMARY_PATH
 EMBEDDINGS_CACHE_PATH = os.path.join(BASE_DIR, "utilities", "channel_embeddings.npy")
 
 
 def load_jsonl(path: str) -> list:
+    if not os.path.exists(path):
+        return []
     with open(path, encoding="utf-8") as f:
         return [json.loads(line) for line in f if line.strip()]
 
@@ -99,7 +103,7 @@ async def handle_message(update: Update, context: CallbackContext):
         await update.message.reply_text(WELCOME)
         return
 
-    await update.message.reply_text("Searching for messages to help you...")
+    await update.message.reply_text("Searching for relevant messages...")
 
     try:
         # Offload synchronous OpenAI call and ranking to thread to avoid blocking asyncio loop
@@ -109,40 +113,30 @@ async def handle_message(update: Update, context: CallbackContext):
         await update.message.reply_text(f"Sorry, something went wrong: {e}")
         return
 
-    for i, (msg, _) in enumerate(ranked[:5], 1):
+    for i, (msg, _) in enumerate(ranked[:3], 1):
         text = msg.get("text", "")
-        snippet = text[:300].rsplit(" ", 1)[0] + "..." if len(text) > 300 else text
+        snippet = text[:280].rsplit(" ", 1)[0] + "..." if len(text) > 280 else text
         safe_snippet = html.escape(snippet)
         link = msg.get("channel_link", "")
         audio_message_id = msg.get("message_id")
-        photo_message_id = msg.get("photo_message_id")
-        keyboard = InlineKeyboardMarkup([[InlineKeyboardButton("📢 Open in channel", url=link)]]) if link else None
+        from_channel = msg.get("from_chat_id") or (f"@{msg['channel']}" if msg.get("channel") else "@pst_tara")
+        keyboard = InlineKeyboardMarkup([[InlineKeyboardButton("Open in Channel", url=link)]]) if link else None
+        caption = f"<b>{i}.</b> {safe_snippet}"
 
-        # Send cover art with text snippet using safe HTML parsing
-        if photo_message_id:
-            try:
-                await context.bot.copy_message(
-                    chat_id=update.effective_chat.id,
-                    from_chat_id="@pst_tara",
-                    message_id=photo_message_id,
-                    caption=f"<b>{i}.</b> {safe_snippet}",
-                    parse_mode="HTML",
-                )
-            except Exception:
-                logging.exception(f"Failed to send cover art for result {i}")
-
-        # Send the audio file so the user can play it directly
+        # Send the audio file with caption and button attached so the user can play it directly
         try:
             await context.bot.copy_message(
                 chat_id=update.effective_chat.id,
-                from_chat_id="@pst_tara",
+                from_chat_id=from_channel,
                 message_id=audio_message_id,
+                caption=caption,
+                parse_mode="HTML",
                 reply_markup=keyboard,
             )
         except Exception:
             logging.exception(f"Failed to send audio for result {i}")
             await update.message.reply_text(
-                f"<b>{i}.</b> {safe_snippet}",
+                caption,
                 parse_mode="HTML",
                 reply_markup=keyboard,
                 disable_web_page_preview=True,

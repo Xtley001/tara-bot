@@ -6,3 +6,6 @@ __pycache__/
 .venv/
 venv/
 *.npy
+*.session
+*.session-journal
+.code_hash
