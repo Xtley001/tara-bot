@@ -1,0 +1,15 @@
+name: Render Web Service Keep Alive
+
+on:
+  schedule:
+    # Runs periodically to keep the Render free tier awake
+    - cron: '*/15 * * * *'
+  workflow_dispatch:
+
+jobs:
+  keep_alive:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Ping Render Service
+        run: |
+          curl -sS -I --max-time 20 "https://tara-bot-flyg.onrender.com/" || true

@@ -7,6 +7,7 @@ import os
 import random
 import re
 import threading
+import time
 import urllib.request
 import numpy as np
 from dotenv import load_dotenv
@@ -731,15 +732,20 @@ def main():
     )
     logging.info(f"Ready — {len(MESSAGES)} messages indexed.")
 
-    # Render Web Service port binding check
+    # Render Web Service port binding check and keep-alive server
     port = os.getenv("PORT")
     if port:
         class HealthCheckHandler(http.server.BaseHTTPRequestHandler):
             def do_GET(self):
                 self.send_response(200)
-                self.send_header("Content-type", "text/plain")
+                self.send_header("Content-type", "application/json")
                 self.end_headers()
-                self.wfile.write(b"OK")
+                payload = json.dumps({
+                    "status": "online",
+                    "service": "Pastor Tara AI Ministry Assistant",
+                    "messages_indexed": len(MESSAGES),
+                }).encode("utf-8")
+                self.wfile.write(payload)
 
             def log_message(self, format, *args):
                 pass
@@ -750,6 +756,28 @@ def main():
 
         threading.Thread(target=run_health_server, daemon=True).start()
         logging.info(f"Health-check server running on port {port}")
+
+        # Keep-alive daemon thread to prevent Render free-tier from idling after 15 minutes
+        render_url = (os.getenv("RENDER_EXTERNAL_URL") or "https://tara-bot-flyg.onrender.com").rstrip("/")
+        
+        def keep_alive_loop():
+            # Wait 90 seconds after boot before sending first self-ping
+            time.sleep(90)
+            while True:
+                try:
+                    req = urllib.request.Request(
+                        f"{render_url}/",
+                        headers={"User-Agent": "TaraBot-KeepAlive/1.0"}
+                    )
+                    with urllib.request.urlopen(req, timeout=15) as resp:
+                        logging.info(f"Keep-alive ping sent to {render_url}: HTTP {resp.status}")
+                except Exception as e:
+                    logging.warning(f"Keep-alive ping failed: {e}")
+                # Ping every 9 minutes (Render free tier sleeps after 15 minutes of inactivity)
+                time.sleep(540)
+
+        threading.Thread(target=keep_alive_loop, daemon=True).start()
+        logging.info(f"Keep-alive daemon active for {render_url} (interval: 9m)")
 
     # In Python 3.12/3.14+, get_event_loop() no longer auto-creates a loop
     try:
