@@ -155,19 +155,89 @@ def get_sermon_title(msg: dict) -> str:
     """Extract clean sermon title from message metadata, filename, or text."""
     if not msg:
         return "Prophetic Teaching"
-    if msg.get("title"):
-        return msg["title"].strip()
+    title = msg.get("title", "")
+    if title and not title.lower().startswith("message_") and not title.lower().startswith("audio"):
+        clean = re.sub(r"\.(mp3|m4a|wav|aac|ogg)$", "", title, flags=re.I).strip()
+        clean = re.sub(r"[*_`#]", "", clean).strip()
+        if len(clean) > 2:
+            return clean
     if msg.get("audio_filename"):
         fn = msg["audio_filename"]
-        clean = re.sub(r"\.(mp3|m4a|wav|aac)$", "", fn, flags=re.I)
+        clean = re.sub(r"\.(mp3|m4a|wav|aac|ogg)$", "", fn, flags=re.I)
         clean = clean.replace("-", " ").strip()
-        if len(clean) > 2:
+        clean = re.sub(r"[*_`#]", "", clean).strip()
+        clean = re.sub(r"\s+", " ", clean)
+        if len(clean) > 2 and not clean.lower().startswith("message_") and not clean.lower().startswith("audio"):
             return clean
     text = msg.get("text", "")
     match = re.search(r"[“\"']([^“”\"'\n]{3,60})[”\"']", text)
-    if match:
+    if match and not match.group(1).lower().startswith("in this"):
         return match.group(1).strip()
+    lines = [l.strip() for l in text.split("\n") if l.strip()]
+    if lines:
+        first = re.sub(r"[*_`#]", "", lines[0]).strip()
+        if 3 <= len(first) <= 65 and not first.endswith("."):
+            return first
     return "Prophetic Teaching"
+
+
+def clean_sermon_snippet(raw_text: str, title: str, max_chars: int = 240) -> str:
+    """
+    Cleans message text for Telegram captions by:
+    1. Fixing character encoding artifacts
+    2. Removing trailing channel boilerplate
+    3. Stripping leading duplicate titles so they are not repeated under the header
+    4. Removing raw markdown asterisks, hashes, and backticks
+    5. Cleanly truncating to max_chars without cutting mid-word
+    """
+    if not raw_text:
+        return ""
+
+    text = raw_text.replace("\ufffd", "'").replace("â€™", "'").replace("’", "'").replace("‘", "'")
+    text = text.replace("“", '"').replace("”", '"')
+    text = text.replace("—", " — ").replace("–", " - ")
+
+    # Strip channel boilerplate
+    boilerplate_patterns = [
+        r"(?:Download|Listen)[\.\s,]+(?:Share[\.\s,]+)?(?:Be\s+Transformed[\.\s,]*)?.*",
+        r"Invite people to join this Telegram channel.*",
+        r"To be a part of this blessing you are enjoying.*",
+        r"For further enquiries.*",
+        r"God bless you[\.!]*\s*$",
+    ]
+    for pat in boilerplate_patterns:
+        text = re.sub(pat, "", text, flags=re.I | re.DOTALL).strip()
+
+    # Drop leading line if it duplicates the title header
+    lines = [line.strip() for line in text.split("\n") if line.strip()]
+    if lines:
+        first_clean = re.sub(r"[*_`#\"']", "", lines[0]).strip().lower()
+        first_clean = re.sub(r"\.(mp3|m4a|wav|aac|ogg)$", "", first_clean, flags=re.I).strip()
+        title_clean = re.sub(r"[*_`#\"']", "", title).strip().lower()
+        title_clean = re.sub(r"\.(mp3|m4a|wav|aac|ogg)$", "", title_clean, flags=re.I).strip()
+        f_base = re.sub(r"\s+[-–—,]?\s*(?:part|pt|episode|ep)?\s*(\d+|[a-e])\s*$", "", first_clean)
+        t_base = re.sub(r"\s+[-–—,]?\s*(?:part|pt|episode|ep)?\s*(\d+|[a-e])\s*$", "", title_clean)
+
+        if f_base == t_base or first_clean == title_clean:
+            lines = lines[1:]
+
+    text = " ".join(lines)
+    # Strip raw markdown markup
+    text = re.sub(r"[*_`#]", "", text)
+    text = re.sub(r"\s+", " ", text).strip()
+
+    if not text:
+        return ""
+
+    if len(text) > max_chars:
+        cut = text[:max_chars]
+        last_dot = cut.rfind(".")
+        if last_dot > max_chars * 0.65:
+            text = cut[:last_dot + 1]
+        else:
+            text = cut.rsplit(" ", 1)[0] + "..."
+
+    return html.escape(text)
 
 
 def get_or_load_embeddings() -> np.ndarray:
@@ -402,22 +472,17 @@ async def deliver_sermons(
             sermon_counter += 1
             title = msg.get("display_title") or get_sermon_title(msg)
             safe_title = html.escape(title)
-            text = msg.get("text", "")
-
-            # Clean text snippet by removing repetitive boilerplate
-            clean_text = re.sub(r"(Download|Listen)[\.\s]+(Share[\.\s]+)?Be\s+Transformed.*", "", text, flags=re.I).strip()
-            if len(clean_text) > 260:
-                snippet = clean_text[:260].rsplit(" ", 1)[0] + "..."
-            else:
-                snippet = clean_text
-            safe_snippet = html.escape(snippet)
+            safe_snippet = clean_sermon_snippet(msg.get("text", ""), title)
 
             link = msg.get("channel_link", "") or msg.get("url", "")
             audio_message_id = msg.get("message_id")
             audio_url = msg.get("audio_url", "")
             from_channel = msg.get("from_chat_id") or (f"@{msg['channel']}" if msg.get("channel") else "@pst_tara")
 
-            caption = f"<b>{sermon_counter}. {safe_title}</b>\n\n{safe_snippet}"
+            if safe_snippet:
+                caption = f"<b>{sermon_counter}. {safe_title}</b>\n\n{safe_snippet}"
+            else:
+                caption = f"<b>{sermon_counter}. {safe_title}</b>\n\nProphetic teaching by Pastor Tara Akinkuade."
 
             if audio_message_id:
                 delivered_ids.append(audio_message_id)
