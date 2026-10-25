@@ -120,10 +120,11 @@ def synthesize_pastoral_guidance(user_name: str, query: str, top_sermon: dict) -
             "Speak in Pastor Tara's authentic, faith-filled, warm pastoral voice. Embody his key revelations: "
             "the Blessing of Dominion, stretching in prayer and spiritual encounters, giving credence to God's Word over sensory facts, "
             "spiritual structures for enterprise, and walking in supernatural wisdom.\n\n"
-            "Format your response in exactly two short paragraphs:\n"
-            "Paragraph 1: Address the believer warmly by their first name (e.g., 'Dear Christley,' or 'Grace and peace to you, Christley.'). "
-            "Give a 2-sentence spiritual anchor that directly addresses their inquiry or topic with prophetic clarity.\n"
-            "Paragraph 2: A 1-sentence declaration starting with '<b>Confession for Today:</b> ' with the confession inside quotation marks."
+            "Format your response as exactly 1 to 2 short sentences of uplifting spiritual advice directly addressing their inquiry with prophetic clarity. "
+            "CRITICAL RULES:\n"
+            "- Do NOT include any greeting or salutation (do NOT say 'Grace and peace', 'Dear...', or address the user by name).\n"
+            "- Do NOT include any confession or declaration (no 'Confession for Today').\n"
+            "- Only provide the concise spiritual advice."
         )
 
         user_content = (
@@ -139,12 +140,15 @@ def synthesize_pastoral_guidance(user_name: str, query: str, top_sermon: dict) -
                 {"role": "system", "content": system_prompt},
                 {"role": "user", "content": user_content},
             ],
-            "max_tokens": 220,
+            "max_tokens": 140,
             "temperature": 0.6,
         }
 
         res = openai_api_request("chat/completions", payload, timeout=6)
         content = res["choices"][0]["message"]["content"].strip()
+        # Clean any accidental greeting or confession
+        content = re.sub(r"^(?:Grace\s+and\s+peace[^,\.\n]*[,\.\n]+|Dear\s+[^,\.\n]+[,\.\n]+|Hello\s+[^,\.\n]+[,\.\n]+)", "", content, flags=re.I).strip()
+        content = re.sub(r"(?:\n\n)?(?:<b>)?Confession\s+for\s+Today:?(?:</b>)?.*$", "", content, flags=re.I | re.DOTALL).strip()
         return content
     except Exception as e:
         logging.warning(f"Could not synthesize pastoral guidance: {e}")
@@ -181,11 +185,11 @@ def get_sermon_title(msg: dict) -> str:
     return "Prophetic Teaching"
 
 
-def clean_sermon_snippet(raw_text: str, title: str, max_chars: int = 240) -> str:
+def clean_sermon_snippet(raw_text: str, title: str, max_chars: int = 480) -> str:
     """
     Cleans message text for Telegram captions by:
-    1. Fixing character encoding artifacts
-    2. Removing trailing channel boilerplate
+    1. Fixing character encoding artifacts and leading typos
+    2. Removing trailing channel boilerplate (e.g. Listen. Share. Be Transformed.)
     3. Stripping leading duplicate titles so they are not repeated under the header
     4. Removing raw markdown asterisks, hashes, and backticks
     5. Cleanly truncating to max_chars without cutting mid-word
@@ -225,6 +229,9 @@ def clean_sermon_snippet(raw_text: str, title: str, max_chars: int = 240) -> str
     # Strip raw markdown markup
     text = re.sub(r"[*_`#]", "", text)
     text = re.sub(r"\s+", " ", text).strip()
+
+    # Clean known leading typos in channel posts
+    text = re.sub(r"^ife's\b", "Life's", text, flags=re.I)
 
     if not text:
         return ""
@@ -394,7 +401,7 @@ async def deliver_sermons(
 
     user_name = (user.first_name if user and user.first_name else "").strip() or "Beloved"
 
-    # On the first batch of a topic, deliver pastoral synthesis & prophetic confession
+    # On the first batch of a topic, deliver pastoral guidance
     if start_idx == 0 and query_text and selected_teachings:
         top_sermon = selected_teachings[0][0]
         try:
@@ -403,6 +410,12 @@ async def deliver_sermons(
                 await context.bot.send_message(
                     chat_id=chat_id,
                     text=f"{guidance}\n\n<i>Here are the prophetic messages to anchor this in your spirit today:</i>",
+                    parse_mode="HTML",
+                )
+            else:
+                await context.bot.send_message(
+                    chat_id=chat_id,
+                    text="<i>Here are the prophetic messages to anchor this in your spirit today:</i>",
                     parse_mode="HTML",
                 )
         except Exception:
@@ -430,13 +443,14 @@ async def deliver_sermons(
             else:
                 caption = f"<b>{sermon_counter}. {safe_title}</b>\n\nProphetic teaching by Pastor Tara Akinkuade."
 
-            # 1. SEND FLYER IMAGE (ABOVE AUDIO) IF VERIFIED PHOTO EXISTS
+            # 1. SEND FLYER IMAGE (ABOVE AUDIO) WITH EMPTY CAPTION (NO BOILERPLATE)
             if photo_message_id:
                 try:
                     await context.bot.copy_message(
                         chat_id=chat_id,
                         from_chat_id=from_channel,
                         message_id=photo_message_id,
+                        caption="",
                     )
                 except Exception:
                     logging.exception(f"Failed to copy flyer photo {photo_message_id} from {from_channel}")
