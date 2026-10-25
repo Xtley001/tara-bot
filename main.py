@@ -290,85 +290,49 @@ def rank_messages(user_query: str, seen_ids: set = None) -> list:
     return results
 
 
-def get_welcome_message(user, profile: dict = None) -> tuple[str, InlineKeyboardMarkup]:
+def get_welcome_message(user, profile: dict = None) -> tuple[str, InlineKeyboardMarkup | None]:
     name = (user.first_name if user and user.first_name else "").strip() or "Beloved"
     last_topic = profile.get("last_topic") if profile else None
 
     # Returning discipleship continuity
     if last_topic and profile and profile.get("visit_count", 0) > 1:
         text = (
-            f"Welcome back, {name}.\n\n"
-            f"It is a blessing to minister alongside you again. Last time, you were meditating on:\n"
-            f"• <b>{html.escape(last_topic)}</b>\n\n"
-            f"Would you like to continue in this series, or explore a new spiritual theme today?\n\n"
-            "<i>Type any question on your heart, or choose below:</i>"
+            f"Welcome back, <b>{name}</b>, to Pastor Tara AI — where we are raising a supernatural army and restoring dignity to all.\n\n"
+            f"Last time, you were meditating on <i>{html.escape(last_topic)}</i>.\n\n"
+            "Tell me how I can be of help to you today. "
+            "Type what is on your heart, or let me know if you would like to continue in this series."
         )
-        keyboard = InlineKeyboardMarkup([
-            [InlineKeyboardButton(f"Continue: {last_topic[:26]}...", callback_data=f"cat:{last_topic}")],
-            [InlineKeyboardButton("Browse Ministry Themes", callback_data="action:browse_categories")],
-        ])
-        return text, keyboard
+        return text, None
 
     text = (
-        f"Grace and peace to you, {name}.\n\n"
-        "Welcome to Pastor Tara Akinkuade's Sermon Assistant.\n\n"
-        "I am here to minister alongside you—to help you discover, meditate upon, and listen to "
-        "prophetic audio messages directly from Pastor Tara's official library.\n\n"
-        "How you can engage:\n"
-        "• <b>Share what is on your heart:</b> Type any life situation, spiritual question, or topic you desire breakthrough or direction in.\n"
-        "• <b>Explore themes:</b> Tap /categories below to explore curated ministry themes.\n"
-        "• <b>Listen directly:</b> Messages can be played right here in Telegram or viewed in the official channel.\n\n"
-        "<b>Sample topics to explore:</b>\n"
-        "• <i>Building structures for financial prosperity</i>\n"
-        "• <i>Stretching in prayer and spiritual encounters</i>\n"
-        "• <i>Principles for a fruitful marriage</i>\n"
-        "• <i>Destiny realignment and the Blessing of Dominion</i>\n\n"
-        "Type your question or heart desire below to begin."
+        f"Welcome, <b>{name}</b>, to Pastor Tara AI — where we are raising a supernatural army and restoring dignity to all.\n\n"
+        "Tell me how I can be of help to you today. "
+        "Simply describe what is on your heart or any area you desire breakthrough in "
+        "(e.g., <i>finances, prayer, purpose, marriage, or academics</i>), "
+        "and I will share prophetic teachings from Pastor Tara to anchor your spirit."
     )
-    keyboard = InlineKeyboardMarkup([
-        [InlineKeyboardButton("Explore Ministry Themes", callback_data="action:browse_categories")]
-    ])
-    return text, keyboard
+    return text, None
 
 
 HELP_TEXT = (
-    "<b>Pastor Tara's Sermon Assistant — Commands & Guide</b>\n\n"
+    "<b>Pastor Tara AI — Commands & Guide</b>\n\n"
     "<b>Commands:</b>\n"
-    "/start - Welcome guide and pastoral introduction\n"
-    "/categories - Explore curated ministry themes\n"
-    "/more - Receive next teaching in your active series\n"
+    "/start - Welcome introduction and guide\n"
+    "/more - Deliver next batch of 5 teachings\n"
     "/help - Show this guide\n\n"
-    "<b>Search Tips:</b>\n"
-    "• Speak freely in natural words. Rather than just a single term, describe what you are walking through (e.g., 'wisdom for expanding my enterprise' or 'how to stretch in prayer and conquer fear').\n"
-    "• Audio messages are playable directly inside this chat.\n"
-    "• Type 'more' or 'next' anytime to advance to the next sermon in the series."
+    "<b>How to use:</b>\n"
+    "• Simply speak in your own words. Describe what you are walking through or desiring direction in (e.g., 'wisdom for expanding my business' or 'how to conquer fear in prayer').\n"
+    "• Each message includes the sermon flyer, description, and playable audio.\n"
+    "• Type 'more' or 'next' anytime to receive the next batch of teachings."
 )
-
-CATEGORIES_KEYBOARD = InlineKeyboardMarkup([
-    [
-        InlineKeyboardButton("Prayer & Spiritual Encounters", callback_data="cat:Prayer & Spiritual Encounters"),
-    ],
-    [
-        InlineKeyboardButton("Supernatural Business & Wealth", callback_data="cat:Supernatural Business & Wealth"),
-        InlineKeyboardButton("Academics & Student Excellence", callback_data="cat:Academics & Student Excellence"),
-    ],
-    [
-        InlineKeyboardButton("Marriage, Family & Fruitfulness", callback_data="cat:Marriage, Family & Fruitfulness"),
-        InlineKeyboardButton("Health, Wholeness & Healing", callback_data="cat:Health, Wholeness & Healing"),
-    ],
-    [
-        InlineKeyboardButton("Purpose, Calling & Destiny", callback_data="cat:Purpose, Calling & Destiny"),
-    ],
-])
 
 
 async def post_init(application: Application):
     """Register top commands with Telegram menu."""
     commands = [
-        BotCommand("start", "Welcome guide and pastoral introduction"),
-        BotCommand("categories", "Browse sermons by ministry theme"),
-        BotCommand("more", "Deliver additional messages from recent search"),
-        BotCommand("help", "Search instructions and tips"),
+        BotCommand("start", "Welcome introduction and guide"),
+        BotCommand("more", "Deliver next batch of 5 teachings"),
+        BotCommand("help", "Instructions and search tips"),
     ]
     try:
         await application.bot.set_my_commands(commands)
@@ -398,22 +362,12 @@ async def help_command(update: Update, context: CallbackContext) -> None:
     await update.message.reply_text(HELP_TEXT, parse_mode="HTML")
 
 
-async def categories_command(update: Update, context: CallbackContext) -> None:
-    user = update.effective_user
-    name = (user.first_name if user and user.first_name else "").strip() or "Beloved"
-    await update.message.reply_text(
-        f"Where would you like the Lord to minister to you today, {name}?\n\n"
-        "Select a ministry theme below, or describe your situation in your own words:",
-        reply_markup=CATEGORIES_KEYBOARD,
-    )
-
-
 async def deliver_sermons(
     chat_id: int,
     context: CallbackContext,
     ranked_list: list,
     start_idx: int,
-    count: int = 2,
+    count: int = 5,
     query_text: str = "",
     user=None,
 ):
@@ -421,7 +375,7 @@ async def deliver_sermons(
     if not ranked_list or start_idx >= len(ranked_list):
         await context.bot.send_message(
             chat_id=chat_id,
-            text="You have reached the end of the available messages on this topic. Type a new topic or select /categories to explore further.",
+            text="You have reached the end of the available messages on this topic. Type another topic or question on your heart to continue.",
         )
         return
 
@@ -432,19 +386,10 @@ async def deliver_sermons(
 
     while curr_idx < len(ranked_list):
         teaching = ranked_list[curr_idx]
-        if not selected_teachings:
-            selected_teachings.append(teaching)
-            total_parts += len(teaching)
-            curr_idx += 1
-            # If this first teaching is already a multi-part series, deliver the complete series
-            if total_parts >= 2:
-                break
-        else:
-            # If previous was 1 standalone sermon and next teaching fits
-            if total_parts < count:
-                selected_teachings.append(teaching)
-                total_parts += len(teaching)
-                curr_idx += 1
+        selected_teachings.append(teaching)
+        total_parts += len(teaching)
+        curr_idx += 1
+        if total_parts >= count:
             break
 
     user_name = (user.first_name if user and user.first_name else "").strip() or "Beloved"
@@ -457,7 +402,7 @@ async def deliver_sermons(
             if guidance:
                 await context.bot.send_message(
                     chat_id=chat_id,
-                    text=f"{guidance}\n\n<i>Here is the prophetic message to anchor this in your spirit today:</i>",
+                    text=f"{guidance}\n\n<i>Here are the prophetic messages to anchor this in your spirit today:</i>",
                     parse_mode="HTML",
                 )
         except Exception:
@@ -476,6 +421,7 @@ async def deliver_sermons(
 
             link = msg.get("channel_link", "") or msg.get("url", "")
             audio_message_id = msg.get("message_id")
+            photo_message_id = msg.get("photo_message_id")
             audio_url = msg.get("audio_url", "")
             from_channel = msg.get("from_chat_id") or (f"@{msg['channel']}" if msg.get("channel") else "@pst_tara")
 
@@ -484,6 +430,18 @@ async def deliver_sermons(
             else:
                 caption = f"<b>{sermon_counter}. {safe_title}</b>\n\nProphetic teaching by Pastor Tara Akinkuade."
 
+            # 1. SEND FLYER IMAGE (ABOVE AUDIO) IF VERIFIED PHOTO EXISTS
+            if photo_message_id:
+                try:
+                    await context.bot.copy_message(
+                        chat_id=chat_id,
+                        from_chat_id=from_channel,
+                        message_id=photo_message_id,
+                    )
+                except Exception:
+                    logging.exception(f"Failed to copy flyer photo {photo_message_id} from {from_channel}")
+
+            # 2. SEND AUDIO MESSAGE WITH TITLE, DESCRIPTION, AND LINK
             if audio_message_id:
                 delivered_ids.append(audio_message_id)
                 seen_ids.add(audio_message_id)
@@ -547,11 +505,11 @@ async def deliver_sermons(
     # Show pastoral pagination prompt if more results remain
     if new_offset < len(ranked_list):
         more_keyboard = InlineKeyboardMarkup([
-            [InlineKeyboardButton("Next Teaching in this Series", callback_data="action:more")]
+            [InlineKeyboardButton("Next 5 Teachings", callback_data="action:more")]
         ])
         await context.bot.send_message(
             chat_id=chat_id,
-            text=f"{user_name}, meditate on this teaching today. When you are ready for the next message in this series, tap below or type 'more'.",
+            text=f"{user_name}, meditate on these teachings today. When you are ready for more messages, tap below or type 'more'.",
             reply_markup=more_keyboard,
         )
 
@@ -567,13 +525,12 @@ async def deliver_sermons(
         )
 
 
-
 async def more_command(update: Update, context: CallbackContext) -> None:
     """Deliver next batch of messages from previous search."""
     last_ranked = context.user_data.get("last_ranked")
     if not last_ranked:
         await update.message.reply_text(
-            "You have not searched for a topic yet. Type a topic or question to receive recommendations."
+            "You have not searched for a topic yet. Tell me what is on your heart to receive recommendations."
         )
         return
 
@@ -584,7 +541,7 @@ async def more_command(update: Update, context: CallbackContext) -> None:
         context=context,
         ranked_list=last_ranked,
         start_idx=offset,
-        count=3,
+        count=5,
         query_text=query_text,
         user=update.effective_user,
     )
@@ -654,23 +611,15 @@ async def myid_command(update: Update, context: CallbackContext) -> None:
 
 
 async def on_callback_query(update: Update, context: CallbackContext) -> None:
-    """Handle inline button clicks for categories and pagination."""
+    """Handle inline button clicks for pagination."""
     query: CallbackQuery = update.callback_query
     await query.answer()
 
     data = query.data or ""
-    if data == "action:browse_categories":
-        user = update.effective_user
-        name = (user.first_name if user and user.first_name else "").strip() or "Beloved"
-        await query.message.reply_text(
-            f"Where would you like the Lord to minister to you today, {name}?\n\n"
-            "Select a ministry theme below, or describe your situation in your own words:",
-            reply_markup=CATEGORIES_KEYBOARD,
-        )
-    elif data == "action:more":
+    if data == "action:more":
         last_ranked = context.user_data.get("last_ranked")
         if not last_ranked:
-            await query.message.reply_text("Type a topic to start a new search.")
+            await query.message.reply_text("Tell me what is on your heart to start a new search.")
             return
         offset = context.user_data.get("offset", 0)
         await deliver_sermons(
@@ -678,43 +627,25 @@ async def on_callback_query(update: Update, context: CallbackContext) -> None:
             context=context,
             ranked_list=last_ranked,
             start_idx=offset,
-            count=3,
+            count=5,
             query_text=context.user_data.get("last_query", ""),
             user=update.effective_user,
         )
-    elif data.startswith("cat:"):
-        cat_name = data.split("cat:", 1)[1]
-        user = update.effective_user
-        name = (user.first_name if user and user.first_name else "").strip() or "Beloved"
-        await query.message.reply_text(f"Seeking prophetic guidance in {cat_name} for you, {name}...")
-        seen_ids = context.user_data.get("seen_ids", set())
-        ranked = await asyncio.to_thread(rank_messages, cat_name, seen_ids)
-        grouped_teachings = series_manager.group_ranked_teachings(ranked)
-        context.user_data["last_ranked"] = grouped_teachings
-        context.user_data["last_query"] = cat_name
-        context.user_data["sermon_counter"] = 0
-        await deliver_sermons(
-            chat_id=update.effective_chat.id,
-            context=context,
-            ranked_list=grouped_teachings,
-            start_idx=0,
-            count=2,
-            query_text=cat_name,
-            user=update.effective_user,
-        )
+    elif data == "action:browse_categories" or data.startswith("cat:"):
+        await query.message.reply_text("Tell me what is on your heart today, and I will share prophetic teachings from Pastor Tara.")
 
 
 def is_more_request(text: str) -> tuple[bool, int]:
     """Check if a user is asking for more messages and parse requested count."""
     clean = text.lower().strip()
-    if clean in ["more", "show more", "give me more", "next", "more messages", "continue", "next sermon", "next message"]:
-        return True, 2
+    if clean in ["more", "show more", "give me more", "next", "more messages", "continue", "next sermon", "next message", "next teachings", "more teachings"]:
+        return True, 5
     # Matches patterns like "5 more", "10 more", "give me 5 more"
     match = re.search(r"\b(\d+)\s+more\b", clean)
     if match:
-        count = min(int(match.group(1)), 5)
-        return True, count
-    return False, 2
+        count = min(int(match.group(1)), 10)
+        return True, max(count, 1)
+    return False, 5
 
 
 async def handle_message(update: Update, context: CallbackContext):
@@ -746,7 +677,7 @@ async def handle_message(update: Update, context: CallbackContext):
         last_ranked = context.user_data.get("last_ranked")
         if not last_ranked:
             await update.message.reply_text(
-                f"{name}, you have not searched for a topic yet. Type a topic or select /categories to begin."
+                f"{name}, you have not searched for a topic yet. Tell me what is on your heart to begin."
             )
             return
         offset = context.user_data.get("offset", 0)
@@ -782,7 +713,7 @@ async def handle_message(update: Update, context: CallbackContext):
         context=context,
         ranked_list=grouped_teachings,
         start_idx=0,
-        count=2,
+        count=5,
         query_text=user_query,
         user=update.effective_user,
     )
@@ -859,7 +790,6 @@ def main():
 
     application.add_handler(CommandHandler("start", start_command))
     application.add_handler(CommandHandler("help", help_command))
-    application.add_handler(CommandHandler("categories", categories_command))
     application.add_handler(CommandHandler("more", more_command))
     application.add_handler(CommandHandler("stats", stats_command))
     application.add_handler(CommandHandler("myid", myid_command))
