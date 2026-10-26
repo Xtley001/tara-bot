@@ -304,19 +304,18 @@ def get_welcome_message(user, profile: dict = None) -> tuple[str, InlineKeyboard
     # Returning discipleship continuity
     if last_topic and profile and profile.get("visit_count", 0) > 1:
         text = (
-            f"Welcome back, <b>{name}</b>, to Pastor Tara AI — where we are raising a supernatural army and restoring dignity to all.\n\n"
+            f"Welcome back, <b>{name}</b>!\n\n"
             f"Last time, you were meditating on <i>{html.escape(last_topic)}</i>.\n\n"
-            "Tell me how I can be of help to you today. "
-            "Type what is on your heart, or let me know if you would like to continue in this series."
+            "Tell me how I can help you today. Type what is on your heart, or let me know if you would like to continue in this series."
         )
         return text, None
 
     text = (
-        f"Welcome, <b>{name}</b>, to Pastor Tara AI — where we are raising a supernatural army and restoring dignity to all.\n\n"
-        "Tell me how I can be of help to you today. "
-        "Simply describe what is on your heart or any area you desire breakthrough in "
+        f"Welcome, <b>{name}</b>, to Pastor Tara AI.\n\n"
+        "Tell me how I can help you today. "
+        "Simply type any situation, question, or area you desire breakthrough in "
         "(e.g., <i>finances, prayer, purpose, marriage, or academics</i>), "
-        "and I will share prophetic teachings from Pastor Tara to anchor your spirit."
+        "and I will share prophetic teachings from Pastor Tara to minister to you."
     )
     return text, None
 
